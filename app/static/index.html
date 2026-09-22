@@ -1,3 +1,227 @@
 <!DOCTYPE html>
-<html lang="ko"><head><meta charset="utf-8"><title>NCBI 서열 내려받기</title></head>
-<body>준비 중</body></html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NCBI 서열 내려받기</title>
+<link rel="icon" href="data:,">
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; color: #222; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  h1 { font-size: 20px; margin: 0; }
+  section { margin-top: 16px; padding: 12px 16px; border: 1px solid #ddd; border-radius: 6px; }
+  input[type=text], input[type=number] { padding: 6px 8px; font-size: 14px; }
+  #term { width: 70%; }
+  #folder { width: 85%; }
+  button { padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .5; }
+  #error { display: none; background: #fde8e8; color: #a00; padding: 10px 14px; border-radius: 6px; margin-top: 12px; }
+  #settings { display: none; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: top; }
+  td.len { text-align: right; white-space: nowrap; }
+  th { white-space: nowrap; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .row { margin-top: 8px; }
+  progress { width: 100%; height: 18px; }
+  .hint { color: #666; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NCBI 서열 내려받기</h1>
+  <button id="toggle-settings">⚙ 설정</button>
+</header>
+<div id="error"></div>
+
+<section id="settings">
+  <div class="row">이메일 <input type="text" id="email" size="40" placeholder="NCBI에 알릴 연락처 (선택)"></div>
+  <div class="row">API 키 <input type="text" id="api_key" size="40" placeholder="없어도 됨. 있으면 3배 빠름"></div>
+  <div class="row"><button id="save-settings">저장</button> <span class="hint">발급 방법은 README에 있습니다.</span></div>
+</section>
+
+<section>
+  <input type="text" id="term" placeholder="예: sars-cov-2 whole genome">
+  <button id="search">검색</button>
+</section>
+
+<section id="results" style="display:none">
+  <div class="toolbar">
+    <span>결과 <b id="count">0</b>건</span>
+    <span>페이지당
+      <select id="page-size"><option>20</option><option selected>50</option><option>100</option><option>200</option></select>
+      <button id="prev">◀</button> <span id="page-label">1 / 1</span> <button id="next">▶</button>
+    </span>
+  </div>
+  <table>
+    <thead><tr>
+      <th><label><input type="checkbox" id="select-page"> 이 페이지 전체 선택</label></th>
+      <th>고유번호</th><th>제목</th><th>길이</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="actions">
+    <button id="dl-selected">선택한 0건 받기</button>
+    <span>상위 <input type="number" id="top-n" value="100" min="1" style="width:80px">건 <button id="dl-top">받기</button></span>
+    <button id="dl-all">전체 받기</button>
+  </div>
+</section>
+
+<section>
+  <div class="row">저장 폴더 <input type="text" id="folder"></div>
+  <div class="row">
+    <label><input type="checkbox" id="per_item"> 항목별 파일로 저장</label>
+    <label style="margin-left:16px"><input type="checkbox" id="combined"> 합본 파일로 저장</label>
+    <span id="save-hint" class="hint" style="margin-left:16px"></span>
+  </div>
+  <div id="progress-box" class="row" style="display:none">
+    <progress id="progress" value="0" max="1"></progress>
+    <div><span id="progress-label"></span> <button id="stop">중단</button></div>
+  </div>
+  <div id="result-box" class="row" style="display:none">
+    <span id="result-label"></span> <button id="open-folder">폴더 열기</button>
+  </div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const state = { term: "", count: 0, page: 0, items: [], selected: new Set(), running: false, folder: "", config: {} };
+
+async function api(path, options) {
+  const resp = await fetch(path, options);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || ("요청 실패 (HTTP " + resp.status + ")"));
+  hideError();
+  return data;
+}
+function postJson(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+function showError(msg) { $("error").textContent = msg; $("error").style.display = "block"; }
+function hideError() { $("error").style.display = "none"; }
+const report = e => showError(e.message);
+
+// ---- 설정
+async function loadConfig() {
+  state.config = await api("/api/config");
+  $("email").value = state.config.email;
+  $("api_key").value = state.config.api_key;
+  $("per_item").checked = state.config.per_item;
+  $("combined").checked = state.config.combined;
+  updateButtons();
+}
+function saveConfig() {
+  return postJson("/api/config", {
+    email: $("email").value.trim(), api_key: $("api_key").value.trim(),
+    per_item: $("per_item").checked, combined: $("combined").checked,
+  });
+}
+$("toggle-settings").onclick = () => { const s = $("settings"); s.style.display = s.style.display === "block" ? "none" : "block"; };
+$("save-settings").onclick = () => saveConfig().then(() => { $("settings").style.display = "none"; }).catch(report);
+$("per_item").onchange = $("combined").onchange = () => { updateButtons(); saveConfig().catch(report); };
+
+// ---- 검색과 목록
+function pageSize() { return Number($("page-size").value); }
+function slug(term) { return term.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 50); }
+function today() { return new Date().toISOString().slice(0, 10); }
+
+async function search() {
+  const term = $("term").value.trim();
+  if (!term) return;
+  if (term !== state.term) { state.selected.clear(); state.page = 0; }
+  state.term = term;
+  await loadPage();
+  $("folder").value = state.config.downloads_dir + "/" + slug(term) + "_" + today();
+}
+async function loadPage() {
+  const size = pageSize();
+  const data = await api("/api/search?" + new URLSearchParams({ term: state.term, start: state.page * size, size }));
+  state.count = data.count;
+  state.items = data.items;
+  renderList();
+}
+function renderList() {
+  const pages = Math.max(1, Math.ceil(state.count / pageSize()));
+  $("results").style.display = "block";
+  $("count").textContent = state.count.toLocaleString();
+  $("page-label").textContent = (state.page + 1) + " / " + pages.toLocaleString();
+  $("prev").disabled = state.page === 0;
+  $("next").disabled = state.page >= pages - 1;
+  $("rows").innerHTML = state.items.map(it => `
+    <tr><td><input type="checkbox" data-uid="${esc(it.uid)}" ${state.selected.has(it.uid) ? "checked" : ""}></td>
+    <td>${esc(it.accession)}</td><td>${esc(it.title)}</td><td class="len">${Number(it.length).toLocaleString()}</td></tr>`).join("");
+  $("rows").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => { cb.checked ? state.selected.add(cb.dataset.uid) : state.selected.delete(cb.dataset.uid); updateButtons(); };
+  });
+  $("select-page").checked = state.items.length > 0 && state.items.every(it => state.selected.has(it.uid));
+  $("dl-all").textContent = "전체 " + state.count.toLocaleString() + "건 받기";
+  updateButtons();
+}
+$("search").onclick = () => search().catch(report);
+$("term").onkeydown = e => { if (e.key === "Enter") $("search").click(); };
+$("page-size").onchange = () => { state.page = 0; loadPage().catch(report); };
+$("prev").onclick = () => { state.page--; loadPage().catch(report); };
+$("next").onclick = () => { state.page++; loadPage().catch(report); };
+$("select-page").onchange = () => {
+  state.items.forEach(it => $("select-page").checked ? state.selected.add(it.uid) : state.selected.delete(it.uid));
+  renderList();
+};
+
+// ---- 받기
+function updateButtons() {
+  const canSave = $("per_item").checked || $("combined").checked;
+  $("save-hint").textContent = canSave ? "" : "저장 방식을 하나 이상 선택하세요";
+  const blocked = state.running || !canSave || !state.term;
+  $("dl-selected").textContent = "선택한 " + state.selected.size + "건 받기";
+  $("dl-selected").disabled = blocked || state.selected.size === 0;
+  $("dl-top").disabled = blocked || state.count === 0;
+  $("dl-all").disabled = blocked || state.count === 0;
+}
+function startDownload(extra) {
+  const body = { folder: $("folder").value.trim(), per_item: $("per_item").checked, combined: $("combined").checked, ...extra };
+  $("result-box").style.display = "none";
+  postJson("/api/download", body).then(() => { state.running = true; updateButtons(); poll(); }).catch(report);
+}
+$("dl-selected").onclick = () => startDownload({ ids: [...state.selected] });
+$("dl-top").onclick = () => {
+  const n = Math.min(Math.max(1, Number($("top-n").value) || 1), state.count);
+  $("top-n").value = n;
+  startDownload({ term: state.term, limit: n });
+};
+$("dl-all").onclick = () => startDownload({ term: state.term, limit: null });
+$("stop").onclick = () => postJson("/api/stop", {}).catch(report);
+$("open-folder").onclick = () => postJson("/api/open-folder", { folder: state.folder }).catch(report);
+
+// ---- 진행 상태 (1초마다 조회)
+let pollTimer = null;
+async function poll() {
+  clearTimeout(pollTimer);
+  let s;
+  try { s = await api("/api/status"); } catch (e) { report(e); return; }
+  state.running = s.phase === "collecting" || s.phase === "downloading";
+  state.folder = s.folder;
+  $("progress-box").style.display = state.running ? "block" : "none";
+  if (state.running) {
+    $("progress").max = Math.max(1, s.total);
+    $("progress").value = s.done;
+    $("progress-label").textContent = (s.phase === "collecting" ? "목록 수집 중 " : "받는 중 ")
+      + s.done.toLocaleString() + " / " + s.total.toLocaleString();
+    pollTimer = setTimeout(poll, 1000);
+  } else if (s.phase !== "idle") {
+    const saved = s.done.toLocaleString() + "건 저장됨 → " + s.folder;
+    const missing = s.missing > 0 ? " (" + s.missing.toLocaleString() + "건은 NCBI에서 제공되지 않음)" : "";
+    $("result-label").textContent =
+      s.phase === "done" ? "완료: " + saved + missing :
+      s.phase === "stopped" ? "중단됨: " + saved :
+      s.done.toLocaleString() + "건까지 저장됨. 이후 실패: " + s.message;
+    $("result-box").style.display = "block";
+  }
+  updateButtons();
+}
+
+loadConfig().then(poll).catch(report);
+</script>
+</body>
+</html>
