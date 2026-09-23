@@ -40,6 +40,25 @@ NCBI 웹사이트에서 검색 → 항목 클릭 → FASTA → 저장을 반복�
 5. 받기 버튼을 누르면 진행 막대가 나옵니다. 끝나면 **폴더 열기**로 바로 볼 수 있습니다.
    도중에 **중단**을 누르면 그때까지 받은 파일은 남습니다.
 
+### 검색어 예시
+
+NCBI 웹사이트 검색창에 넣을 수 있는 것은 전부 그대로 됩니다. 이 도구는 검색어를 손대지 않고 NCBI에 넘깁니다.
+
+| 검색어 | 뜻 |
+|---|---|
+| `influenza A H1N1 hemagglutinin` | 단어가 제목·설명·생물명 어디든 들어 있는 항목 |
+| `LR881868.1` | 고유번호 하나 |
+| `LR881868.1 OR MW123456.1` | 고유번호 여러 개를 한 번에 |
+| `"Severe acute respiratory syndrome coronavirus 2"[Organism] AND "complete genome"[Title]` | 생물이 SARS-CoV-2이고 제목에 "complete genome"이 있는 것만 |
+| `"Severe acute respiratory syndrome coronavirus 2"[Organism] AND 29000:30000[Sequence Length] AND 2024[Publication Date]` | 위 생물 중 길이 29,000~30,000이고 2024년에 공개된 것만 |
+
+단어 뒤의 대괄호는 "어느 칸에서 찾을지"입니다. 자주 쓰는 것:
+`[Organism]` 생물 학명, `[Title]` 제목, `[Accession]` 고유번호, `[Sequence Length]` 길이 범위(`최소:최대`),
+`[Publication Date]` 공개 연도(`2023:2024` 같은 범위 가능). 조건은 `AND` / `OR` / `NOT`(대문자)으로 잇습니다.
+
+단어만 나열하면(예: `sars-cov-2 whole genome`) 설명문에 그 단어가 언급된 다른 생물의 항목까지 섞여 나옵니다.
+특정 생물만 원하면 `[Organism]` 조건을 쓰는 것이 훨씬 깨끗합니다.
+
 ## 4. 설정 (⚙)
 
 - **이메일**: NCBI가 문제 상황에서 연락할 주소입니다. 비워도 됩니다.
