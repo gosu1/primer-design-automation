@@ -15,6 +15,29 @@ NCBI 웹사이트에서 검색 → 항목 클릭 → FASTA → 저장을 반복�
 GitHub에서는 위 링크를 누르면 문서가 화면에 펼쳐지고, 오른쪽 위의 내려받기 단추로 저장하실 수 있습니다.
 아래 내용은 같은 설명을 글로만 정리한 것입니다.
 
+<details>
+<summary><b>사용설명서 7쪽 미리보기</b> — 눌러서 펼치기</summary>
+
+<br>
+
+| 1쪽 — 표지와 목차 | 2쪽 — 준비물, 도구 실행하기 |
+|:--:|:--:|
+| <img src="docs/preview/page-1.png" width="100%"> | <img src="docs/preview/page-2.png" width="100%"> |
+
+| 3쪽 — 검색하고 고르기 | 4쪽 — 저장 위치 정하고 받기 |
+|:--:|:--:|
+| <img src="docs/preview/page-3.png" width="100%"> | <img src="docs/preview/page-4.png" width="100%"> |
+
+| 5쪽 — 검색어 쓰는 법 | 6쪽 — 설정, 이메일과 API 키 |
+|:--:|:--:|
+| <img src="docs/preview/page-5.png" width="100%"> | <img src="docs/preview/page-6.png" width="100%"> |
+
+| 7쪽 — 저장된 파일, 문제 해결 | |
+|:--:|:--:|
+| <img src="docs/preview/page-7.png" width="100%"> | |
+
+</details>
+
 ## 1. 준비물
 
 - **파이썬 3.9 이상**. 설치 여부 확인:
