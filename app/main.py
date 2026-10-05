@@ -2,11 +2,13 @@
 
 실행: python -m app.main  →  http://127.0.0.1:8765 가 브라우저에 열린다.
 """
+import json
 import os
 import socket
 import subprocess
 import sys
 import threading
+import urllib.request
 import webbrowser
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -102,20 +104,47 @@ def create_app(client=None, downloader=None):
     return app
 
 
-def port_in_use() -> bool:
+PORT_TRIES = 10
+
+
+def port_open(port: int) -> bool:
     with socket.socket() as s:
-        return s.connect_ex((HOST, PORT)) == 0
+        return s.connect_ex((HOST, port)) == 0
+
+
+def is_our_app(port: int) -> bool:
+    """그 포트에 떠 있는 것이 이 도구인지 확인한다. 다른 프로그램이면 False."""
+    try:
+        with urllib.request.urlopen("http://%s:%d/api/status" % (HOST, port), timeout=1) as resp:
+            return "phase" in json.load(resp)
+    except Exception:
+        return False
+
+
+def choose_port():
+    """(쓸 포트, 이미 실행 중인지)를 돌려준다. 다른 프로그램이 쓰는 포트는 건너뛴다."""
+    for port in range(PORT, PORT + PORT_TRIES):
+        if not port_open(port):
+            return port, False
+        if is_our_app(port):
+            return port, True
+    raise SystemExit(
+        "%d~%d 포트를 모두 다른 프로그램이 쓰고 있어 실행할 수 없습니다."
+        % (PORT, PORT + PORT_TRIES - 1))
 
 
 def main():
-    url = "http://%s:%d" % (HOST, PORT)
-    if port_in_use():
+    port, already_running = choose_port()
+    url = "http://%s:%d" % (HOST, port)
+    if already_running:
         print("이미 실행 중입니다. 브라우저를 엽니다:", url)
         webbrowser.open(url)
         return
+    if port != PORT:
+        print("%d번 자리는 다른 프로그램이 쓰고 있어 %d번으로 엽니다." % (PORT, port))
     threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     print("서버를 시작합니다:", url, " (이 창을 닫으면 종료됩니다)")
-    create_app().run(host=HOST, port=PORT, debug=False)
+    create_app().run(host=HOST, port=port, debug=False)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import pytest
 
+from app import main
 from app.main import create_app
 from app.ncbi import NcbiError
 
@@ -129,3 +130,71 @@ def test_config_roundtrip_updates_client(web):
 def test_open_folder_rejects_missing_folder(web):
     r = web.post("/api/open-folder", json={"folder": "/definitely/not/here"})
     assert r.status_code == 400
+
+
+def fake_ports(monkeypatch, taken, ours):
+    """taken: 열려 있는 포트들, ours: 그중 이 도구인 포트들."""
+    monkeypatch.setattr(main, "port_open", lambda p: p in taken)
+    monkeypatch.setattr(main, "is_our_app", lambda p: p in ours)
+
+
+def test_uses_default_port_when_free(monkeypatch):
+    fake_ports(monkeypatch, taken=set(), ours=set())
+    assert main.choose_port() == (8765, False)
+
+
+def test_reuses_port_when_our_app_is_already_running(monkeypatch):
+    fake_ports(monkeypatch, taken={8765}, ours={8765})
+    assert main.choose_port() == (8765, True)
+
+
+def test_skips_port_held_by_another_program(monkeypatch):
+    # 8765는 남의 프로그램, 8766은 비어 있음 → 8766으로 간다
+    fake_ports(monkeypatch, taken={8765}, ours=set())
+    assert main.choose_port() == (8766, False)
+
+
+def test_skips_several_foreign_programs(monkeypatch):
+    fake_ports(monkeypatch, taken={8765, 8766, 8767}, ours=set())
+    assert main.choose_port() == (8768, False)
+
+
+def test_our_app_behind_a_foreign_program_is_reused(monkeypatch):
+    fake_ports(monkeypatch, taken={8765, 8766}, ours={8766})
+    assert main.choose_port() == (8766, True)
+
+
+def test_gives_up_when_every_port_is_foreign(monkeypatch):
+    fake_ports(monkeypatch, taken=set(range(8765, 8775)), ours=set())
+    with pytest.raises(SystemExit):
+        main.choose_port()
+
+
+def test_is_our_app_rejects_a_different_server(monkeypatch):
+    class OtherServer:
+        def read(self):
+            return b"<html><title>\xed\x94\xbc\xec\x8a\xa4\xed\x92\x80</title></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *a, **k: OtherServer())
+    assert main.is_our_app(8765) is False
+
+
+def test_is_our_app_accepts_our_status_response(monkeypatch):
+    class OurServer:
+        def read(self):
+            return b'{"phase": "idle", "total": 0, "done": 0}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *a, **k: OurServer())
+    assert main.is_our_app(8765) is True
