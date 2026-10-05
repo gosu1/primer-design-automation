@@ -125,6 +125,7 @@ class Outcome:
     accepted: List[str] = field(default_factory=list)  # 확인 화면에서 고른 서열 번호
     url: str = ""              # 결과 페이지 주소
     note: str = ""             # 후보 없음, 사이트 오류 메시지 등
+    failed: bool = False       # 사이트 오류 메시지 또는 해석 실패
     raw_page: str = ""         # 해석 실패 시에만 채움
 
 class PrimerBlastError(Exception):   # 재시도해도 안 된 통신 오류, 시간 초과, 확인 화면 반복
@@ -141,7 +142,7 @@ class PrimerBlastClient:
 | 함수 | 하는 일 |
 |---|---|
 | `parse_form_defaults(html) -> List[Tuple[str, str]]` | `searchForm` 안의 항목을 읽는다. 텍스트 칸은 `value`, 비어 있으면 `defVal`. 체크박스는 `checked`일 때만 `value` 또는 `on`. 선택 상자는 `selected` 옵션, 없으면 첫 옵션. 파일 칸은 뺀다. 같은 이름이 두 번 나오면 첫 값만 쓴다 |
-| `page_kind(html) -> str` | `review`(`userGuidedForm`이 있음), `results`(프라이머 쌍 또는 후보 없음 문구가 있음), `error`(사이트 오류 메시지), `waiting`(그 밖) |
+| `page_kind(html) -> str` | `review`(`userGuidedForm`이 있음), `results`(`prPairInfo` 또는 `No primers were found`가 있음), `error`(`<p class="error">`가 있음), `waiting`(`statInfo`가 있음), `unknown`(그 밖) |
 | `parse_review(html) -> (fields, template_title, hits)` | 확인 화면의 숨은 항목, 입력 서열 제목, 비슷한 서열 목록(번호, 제목, `USER_SEQLOC` 값) |
 | `gene_symbol(title) -> str` | 제목에서 처음 나오는 괄호 안 값. 예: `... tumor protein p53 (TP53), transcript variant 1, mRNA` → `TP53`. 없으면 빈 문자열 |
 | `pick_same_gene(template_title, hits)` | 유전자 이름이 입력 서열과 같은 항목만 고른다. 입력 서열의 유전자 이름이 없으면 아무것도 고르지 않는다 |
@@ -155,8 +156,10 @@ class PrimerBlastClient:
 4. `POLL_INTERVAL`마다 `primertool.cgi?job_key=...`를 GET하고 `page_kind`로 판단한다.
    - `waiting`: 계속 기다린다.
    - `review`: `pick_same_gene`으로 고른 값과 숨은 항목을 POST하고 새 `job_key`로 4번을 계속한다. 한 서열에서 두 번째 `review`가 나오면 `PrimerBlastError`.
-   - `results`: `parse_results`. 해석이 예외를 내면 `note="결과 페이지를 읽지 못함"`, `raw_page`=원문.
-   - `error`: `note`=사이트 메시지.
+   - `results`: `parse_results`. 해석이 예외를 내면 `note="결과 페이지를 읽지 못함"`, `failed=True`, `raw_page`=원문.
+   - `error`: `note`=사이트 메시지, `failed=True`. 없는 서열 번호처럼 제출 응답에서 바로 오류가 오기도 한다.
+   - `unknown`: 해석 실패와 같게 처리한다.
+   - 확인 화면에서 고른 서열 번호는 중복을 없앤다(같은 번호가 구간만 달리해 두 번 나올 수 있음). 결과 페이지 주소는 결과를 `job_key`로 GET해서 받았을 때만 남긴다(후보 없음은 확인 화면 제출 응답으로 바로 오기도 함).
 5. 제출부터 `JOB_TIMEOUT`이 지나면 `PrimerBlastError("시간 초과")`.
 6. 기다리는 동안 `should_stop()`이 참이 되면 바로 빠져나온다(결과 없이 `PrimerBlastError("중단")`).
 
@@ -269,22 +272,20 @@ class DesignRequest:
 | 3번 연속 실패 | 작업 전체 멈춤 |
 | 엑셀 파일 잠김 | 다음 저장 때 재시도, 끝까지 안 되면 다른 이름으로 저장 |
 
-## 12. 구현할 때 사이트에서 확인할 것
+## 12. 사이트 확인 결과 (2026-10-06, 계획 작성 중 실제 제출)
 
-자동 시험에 넣을 페이지 원문을 얻기 위해 실제 제출이 필요한 항목이다. 한 번씩만 제출한다.
-
-1. 후보가 없을 때의 결과 페이지 문구 (`page_kind`, `parse_results`)
-2. 잘못된 서열 번호를 넣었을 때의 오류 페이지 (`page_kind`)
-3. 박사님 프라이머를 넣었을 때의 결과 페이지 모양 (`parse_results`가 그대로 쓰이는지)
-4. 생물종 칸에 `Homo sapiens`나 `Mus musculus`처럼 이름만 넣어도 되는지, `(taxid:...)` 형식이 필요한지
-5. 결과 페이지 주소가 얼마나 오래 열리는지 (README 안내 문구용)
-6. 도구 이름을 밝힌 머리글로 요청해도 사이트가 거부하지 않는지
+1. 후보 없음: `<p class="info">No primers were found...see explanation below: Primer3 info: ...</p>`. 확인 화면 제출 응답으로 바로 왔다. 안내문을 메모에 옮긴다.
+2. 없는 서열 번호: 제출 응답이 곧바로 오류 페이지다(`job_key` 없음). `<p class="error">Exception error: Sequence ID not found: 'ref|NM_99999999|'</p>`.
+3. 박사님 프라이머: 결과 페이지 구조가 같고 쌍이 1개다. 확인 화면은 나오지 않았다.
+4. 생물종: `Mus musculus`처럼 이름만 넣어도 "Organism limited to Mus musculus"로 적용됐다.
+5. 결과 페이지 주소: 약 30분 뒤에도 열렸다. 정확한 보관 기간은 모르므로 README에는 "시간이 지나면 열리지 않을 수 있음"으로 안내한다.
+6. 도구 이름을 밝힌 머리글(`primer-design-automation (python-requests/...)`)로도 모든 요청이 정상 처리됐다.
 
 ## 13. 테스트와 완료 판정
 
 자동 시험은 사이트에 접속하지 않는다.
 
-- `tests/fixtures/primerblast/`: 사전 확인 때 받은 입력 화면, 확인 화면, 결과 화면과 12절에서 받을 페이지. 접속 식별 값(`MYNCBI_USER` 등)과 `job_key`는 지우고 저장한다(공개 저장소).
+- `tests/fixtures/primerblast/`: 입력 화면, 대기 화면, 확인 화면, 결과 화면, 검사 모드 결과, 후보 없음, 오류 페이지 7개. 접속 식별 값(`MYNCBI_USER` 등)과 `job_key`는 지우고 저장한다(공개 저장소).
 - `test_primerblast.py`: 5.2의 함수 전부. 가짜 세션으로 "기다림 → 확인 화면 → 기다림 → 결과" 흐름, 재시도, 시간 초과, 확인 화면 반복, 중단.
 - `test_designer.py`: 가짜 클라이언트로 줄 여러 개 처리, 저장한 엑셀을 다시 열어 칸과 값 확인, 중단 시 끝난 결과 보존, 3번 연속 실패 시 멈춤, 파일 잠김 시 다른 이름 저장.
 - `test_main.py`: 새 경로 4개의 정상 동작과 400/409.
