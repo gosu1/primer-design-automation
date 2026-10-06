@@ -21,6 +21,15 @@ HEADERS = [
     "조각 길이", "잘못 붙는 대상(같은 유전자)", "잘못 붙는 대상(다른 유전자)",
     "자동으로 고른 비슷한 서열", "결과 페이지 주소", "메모",
 ]
+HEADERS_EN = [
+    "Accession", "Title", "Pair",
+    "Forward primer", "Forward start", "Forward stop", "Forward length", "Forward Tm", "Forward GC%",
+    "Reverse primer", "Reverse start", "Reverse stop", "Reverse length", "Reverse Tm", "Reverse GC%",
+    "Product length", "Unintended targets (same gene)", "Unintended targets (other gene)",
+    "Accepted similar sequences", "Result URL", "Note",
+]
+SHEET_TITLE_EN = "Results"
+TERMS = ("ko", "en")
 PAIR_COLUMNS = 16   # 후보 순번부터 잘못 붙는 대상(다른 유전자)까지
 FASTA_EXTENSIONS = (".txt", ".fasta", ".fa")
 
@@ -55,11 +64,11 @@ def excel_rows(row: Row, outcome: Outcome) -> List[list]:
     ]
 
 
-def write_workbook(path: str, rows: List[list]):
+def write_workbook(path: str, rows: List[list], terms: str = "ko"):
     book = Workbook()
     sheet = book.active
-    sheet.title = SHEET_TITLE
-    sheet.append(HEADERS)
+    sheet.title = SHEET_TITLE_EN if terms == "en" else SHEET_TITLE
+    sheet.append(HEADERS_EN if terms == "en" else HEADERS)
     for values in rows:
         sheet.append(values)
     sheet.freeze_panes = "A2"
@@ -71,6 +80,7 @@ class DesignRequest:
     rows: List[Row]
     common: Common
     folder: str
+    terms: str = "ko"   # 엑셀 머리글 용어
 
 
 def _number(values: dict, key: str, kind, label: str, required: bool = True):
@@ -95,6 +105,9 @@ def request_from_json(body: dict) -> DesignRequest:
     folder = str(body.get("folder") or "").strip()
     if not folder:
         raise ValueError("저장 폴더를 입력하세요")
+    terms = body.get("terms") or "ko"
+    if terms not in TERMS:
+        raise ValueError("용어 설정 값이 올바르지 않습니다: %s" % terms)
     c = body.get("common") or {}
     common = Common(
         product_min=_number(c, "product_min", int, "조각 길이 최소"),
@@ -117,7 +130,7 @@ def request_from_json(body: dict) -> DesignRequest:
             left=str(item.get("left") or "").strip(),
             right=str(item.get("right") or "").strip(),
         ))
-    return DesignRequest(rows=rows, common=common, folder=os.path.expanduser(folder))
+    return DesignRequest(rows=rows, common=common, folder=os.path.expanduser(folder), terms=terms)
 
 
 class Designer:
@@ -191,24 +204,24 @@ class Designer:
                         f.write(outcome.raw_page)
                 self._mark(i, "실패" if outcome.failed else ("완료" if outcome.pairs else "후보 없음"), outcome.note)
                 self._set(done=i + 1, current="")
-                self._save(path, sheet, final=False)
+                self._save(path, sheet, request.terms, final=False)
                 if failures >= MAX_CONSECUTIVE_FAILURES:
-                    self._save(path, sheet, final=True)
+                    self._save(path, sheet, request.terms, final=True)
                     self._set(phase="error", current="", message="연속으로 실패해 멈췄습니다. 사이트 상태를 확인하세요.")
                     return
-            self._save(path, sheet, final=True)
+            self._save(path, sheet, request.terms, final=True)
             self._set(phase="stopped" if self._stop.is_set() else "done", current="")
         except Exception as exc:  # OSError 등: 이유를 화면에 보여 준다
             self._set(phase="error", current="", message=str(exc))
 
-    def _save(self, path: str, sheet: List[list], final: bool):
+    def _save(self, path: str, sheet: List[list], terms: str, final: bool):
         if not sheet:
             return
         try:
-            write_workbook(path, sheet)
+            write_workbook(path, sheet, terms)
         except PermissionError:
             if not final:
                 return  # 박사님이 파일을 열어 둠: 다음 저장 때 다시 시도한다
             path = path[:-len(".xlsx")] + "_2.xlsx"
-            write_workbook(path, sheet)
+            write_workbook(path, sheet, terms)
         self._set(file=path)

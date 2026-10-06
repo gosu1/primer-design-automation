@@ -13,6 +13,7 @@ def test_missing_file_gives_defaults(tmp_path):
     assert (loaded["product_min"], loaded["product_max"], loaded["num_return"], loaded["organism"]) == (70, 1000, 10, "")
     assert (loaded["tm_min"], loaded["tm_opt"], loaded["tm_max"]) == (57.0, 60.0, 63.0)
     assert loaded["results_dir"].endswith("primer_results")
+    assert loaded["terms"] == "ko"
 
 
 def test_corrupt_file_gives_defaults(tmp_path):

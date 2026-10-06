@@ -269,3 +269,16 @@ def test_primer_page_is_served(web):
     r = web.get("/primer.html")
     assert r.status_code == 200
     assert "프라이머 설계".encode() in r.data
+    assert b'id="terms"' in r.data and b'data-term="forward"' in r.data
+
+
+def test_saving_one_setting_keeps_client_key(web):
+    web.post("/api/config", json={"email": "a@b.c", "api_key": "K", "per_item": True, "combined": False})
+    assert web.post("/api/config", json={"terms": "en"}).status_code == 200
+    assert web.get("/api/config").get_json()["terms"] == "en"
+    assert web.application.client.email == "a@b.c" and web.application.client.api_key == "K"
+
+
+def test_design_passes_terms(web):
+    assert web.post("/api/design", json={**DESIGN_BODY, "terms": "en"}).status_code == 200
+    assert web.application.designer.started[0].terms == "en"

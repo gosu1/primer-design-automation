@@ -86,10 +86,11 @@ def create_app(client=None, downloader=None, designer=None):
 
     @app.post("/api/config")
     def set_config():
-        body = request.get_json(force=True)
-        config.save(body)
-        app.client.email = body.get("email", "")
-        app.client.api_key = body.get("api_key", "")
+        config.save(request.get_json(force=True))
+        # 받은 값에 없는 항목(예: 용어만 저장)이 키를 지우지 않도록 저장된 값으로 맞춘다
+        settings = config.load()
+        app.client.email = settings["email"]
+        app.client.api_key = settings["api_key"]
         return jsonify(ok=True)
 
     @app.post("/api/open-folder")

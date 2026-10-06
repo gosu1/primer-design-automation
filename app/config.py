@@ -1,4 +1,4 @@
-"""config.json 읽기/쓰기. 이메일·API 키·저장 방식 체크박스 상태와 프라이머 설계 조건을 담는다."""
+"""config.json 읽기/쓰기. 이메일·API 키·저장 방식 체크박스 상태와 프라이머 설계 조건, 용어 설정을 담는다."""
 import json
 import os
 from typing import Optional
@@ -9,6 +9,7 @@ DEFAULTS = {
     "product_min": 70, "product_max": 1000, "tm_min": 57.0, "tm_opt": 60.0, "tm_max": 63.0,
     "num_return": 10, "organism": "",
     "results_dir": os.path.join(os.path.expanduser("~"), "Downloads", "primer_results"),
+    "terms": "ko",   # 2단계 화면과 엑셀의 전문 용어: ko(한국어) / en(Primer-BLAST 영어)
 }
 
 

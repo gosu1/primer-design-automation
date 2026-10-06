@@ -5,7 +5,7 @@ from openpyxl import load_workbook
 
 from app import designer
 from app.designer import (
-    HEADERS, MAX_ROWS, Designer, DesignRequest, accessions_in_folder, excel_rows, request_from_json,
+    HEADERS, HEADERS_EN, MAX_ROWS, Designer, DesignRequest, accessions_in_folder, excel_rows, request_from_json,
     write_workbook,
 )
 from app.primerblast import Common, Outcome, Pair, Primer, PrimerBlastError, Row
@@ -48,6 +48,16 @@ def test_excel_rows_without_pairs_keeps_one_line():
     assert lines == [["NM_1", ""] + [None] * 16 + ["", "", "후보 없음"]]
 
 
+def test_write_workbook_in_english(tmp_path):
+    path = str(tmp_path / "r.xlsx")
+    write_workbook(path, excel_rows(Row("NM_1"), found(1)), "en")
+    book = load_workbook(path)
+    assert book.sheetnames == ["Results"]
+    values = list(book["Results"].values)
+    assert list(values[0]) == HEADERS_EN and len(HEADERS_EN) == len(HEADERS)
+    assert values[1][3] == "AAAA"
+
+
 def test_write_workbook_roundtrip(tmp_path):
     path = str(tmp_path / "r.xlsx")
     write_workbook(path, excel_rows(Row("NM_1"), found(1)))
@@ -72,6 +82,8 @@ def test_request_from_json():
     assert req.rows == [Row("NM_1", start=200, end=None, left="ACGT", right="")]
     assert req.common == Common(70, 1000, 57.0, 60.0, 63.0, 10, "Mus musculus")
     assert not req.folder.startswith("~")
+    assert req.terms == "ko"
+    assert request_from_json({**GOOD, "terms": "en"}).terms == "en"
 
 
 @pytest.mark.parametrize("change, message", [
@@ -82,6 +94,7 @@ def test_request_from_json():
     ({"rows": [{"accession": "NM_1", "start": "abc"}]}, "NM_1 구간 시작"),
     ({"common": {**GOOD["common"], "tm_opt": ""}}, "녹는 온도 적정"),
     ({"common": {**GOOD["common"], "product_min": "70.5"}}, "조각 길이 최소"),
+    ({"terms": "fr"}, "용어 설정"),
 ])
 def test_request_from_json_rejects(change, message):
     with pytest.raises(ValueError, match=message):
@@ -200,10 +213,10 @@ def test_unreadable_page_is_saved_next_to_excel(tmp_path):
 def test_locked_excel_is_saved_under_another_name(tmp_path, monkeypatch):
     real = designer.write_workbook
 
-    def locked(path, rows):
+    def locked(path, rows, terms="ko"):
         if not path.endswith("_2.xlsx"):
             raise PermissionError(path)
-        real(path, rows)
+        real(path, rows, terms)
 
     monkeypatch.setattr(designer, "write_workbook", locked)
     s = run(FakeClient([found()]), tmp_path, 1).status()
@@ -226,3 +239,13 @@ def test_start_while_running_is_rejected(tmp_path):
     release.set()
     d.wait()
     assert d.status()["phase"] == "done"
+
+
+def test_excel_headers_follow_request_terms(tmp_path):
+    d = Designer(FakeClient([found()]))
+    d.between_jobs = 0
+    d.start(DesignRequest(rows=[Row("NM_0")], common=Common(), folder=str(tmp_path), terms="en"))
+    d.wait()
+    book = load_workbook(d.status()["file"])
+    assert book.sheetnames == ["Results"]
+    assert list(next(book["Results"].values)) == HEADERS_EN
