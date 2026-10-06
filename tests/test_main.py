@@ -38,9 +38,29 @@ class FakeDownloader:
         self.stopped = True
 
 
-def make(tmp_path, monkeypatch, client=None, downloader=None):
+class FakeDesigner:
+    def __init__(self, running=False):
+        self.running = running
+        self.started = []
+        self.stopped = False
+
+    def is_running(self):
+        return self.running
+
+    def start(self, req):
+        self.started.append(req)
+
+    def status(self):
+        return {"phase": "idle", "total": 0, "done": 0, "current": "", "rows": [], "file": "", "message": ""}
+
+    def stop(self):
+        self.stopped = True
+
+
+def make(tmp_path, monkeypatch, client=None, downloader=None, designer=None):
     monkeypatch.setattr("app.config.CONFIG_PATH", str(tmp_path / "config.json"))
-    app = create_app(client=client or FakeClient(), downloader=downloader or FakeDownloader())
+    app = create_app(client=client or FakeClient(), downloader=downloader or FakeDownloader(),
+                     designer=designer or FakeDesigner())
     app.testing = True
     return app
 
@@ -198,3 +218,48 @@ def test_is_our_app_accepts_our_status_response(monkeypatch):
 
     monkeypatch.setattr(main.urllib.request, "urlopen", lambda *a, **k: OurServer())
     assert main.is_our_app(8765) is True
+
+
+def test_folder_accessions(web, tmp_path):
+    (tmp_path / "NM_1.1.txt").write_text(">NM_1.1 one\nACGT\n")
+    r = web.get("/api/folder-accessions", query_string={"folder": str(tmp_path)})
+    assert r.status_code == 200 and r.get_json() == {"accessions": ["NM_1.1"]}
+
+
+def test_folder_accessions_rejects_missing_folder(web):
+    assert web.get("/api/folder-accessions?folder=/definitely/not/here").status_code == 400
+
+
+DESIGN_BODY = {
+    "rows": [{"accession": "NM_1", "start": "", "end": "", "left": "", "right": ""}],
+    "common": {"product_min": "80", "product_max": "900", "tm_min": "57", "tm_opt": "61", "tm_max": "63",
+               "num_return": "5", "organism": "Mus musculus"},
+    "folder": "~/primers",
+}
+
+
+def test_design_starts_job_and_remembers_conditions(web):
+    r = web.post("/api/design", json=DESIGN_BODY)
+    assert r.status_code == 200 and r.get_json() == {"ok": True}
+    job = web.application.designer.started[0]
+    assert job.rows[0].accession == "NM_1" and job.common.product_min == 80
+    assert not job.folder.startswith("~")
+    saved = web.get("/api/config").get_json()
+    assert saved["product_min"] == 80 and saved["tm_opt"] == 61.0 and saved["organism"] == "Mus musculus"
+    assert saved["results_dir"] == job.folder
+
+
+def test_design_rejects_bad_input(web):
+    r = web.post("/api/design", json={**DESIGN_BODY, "rows": []})
+    assert r.status_code == 400 and "서열이 없습니다" in r.get_json()["error"]
+
+
+def test_design_rejected_while_running(tmp_path, monkeypatch):
+    app = make(tmp_path, monkeypatch, designer=FakeDesigner(running=True))
+    assert app.test_client().post("/api/design", json=DESIGN_BODY).status_code == 409
+
+
+def test_design_status_and_stop(web):
+    assert web.get("/api/design/status").get_json()["phase"] == "idle"
+    assert web.post("/api/design/stop").status_code == 200
+    assert web.application.designer.stopped is True

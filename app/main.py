@@ -1,7 +1,8 @@
-"""로컬 웹 서버. 화면 요청을 받아 ncbi / downloader / config 모듈을 호출한다.
+"""로컬 웹 서버. 화면 요청을 받아 ncbi / downloader / designer / config 모듈을 호출한다.
 
 실행: python -m app.main  →  http://127.0.0.1:8765 가 브라우저에 열린다.
 """
+import dataclasses
 import json
 import os
 import socket
@@ -14,19 +15,22 @@ import webbrowser
 from flask import Flask, jsonify, request, send_from_directory
 
 from app import config
+from app.designer import Designer, accessions_in_folder, request_from_json
 from app.downloader import Downloader, JobRequest
 from app.ncbi import NcbiClient, NcbiError
+from app.primerblast import PrimerBlastClient
 
 HOST = "127.0.0.1"
 PORT = 8765
 DOWNLOADS_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "ncbi_fasta")
 
 
-def create_app(client=None, downloader=None):
+def create_app(client=None, downloader=None, designer=None):
     app = Flask(__name__, static_folder="static", static_url_path="")
     settings = config.load()
     app.client = client or NcbiClient(settings["email"], settings["api_key"])
     app.downloader = downloader or Downloader(app.client)
+    app.designer = designer or Designer(PrimerBlastClient())
 
     @app.errorhandler(NcbiError)
     def ncbi_error(exc):
@@ -99,6 +103,34 @@ def create_app(client=None, downloader=None):
             os.startfile(folder)
         else:
             subprocess.Popen(["xdg-open", folder])
+        return jsonify(ok=True)
+
+    @app.get("/api/folder-accessions")
+    def folder_accessions():
+        folder = os.path.expanduser(request.args.get("folder", "").strip())
+        if not os.path.isdir(folder):
+            return jsonify(error="폴더가 없습니다: " + folder), 400
+        return jsonify(accessions=accessions_in_folder(folder))
+
+    @app.post("/api/design")
+    def design():
+        try:
+            job = request_from_json(request.get_json(force=True))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        if app.designer.is_running():
+            return jsonify(error="이미 설계 중입니다"), 409
+        config.save({**dataclasses.asdict(job.common), "results_dir": job.folder})
+        app.designer.start(job)
+        return jsonify(ok=True)
+
+    @app.get("/api/design/status")
+    def design_status():
+        return jsonify(app.designer.status())
+
+    @app.post("/api/design/stop")
+    def design_stop():
+        app.designer.stop()
         return jsonify(ok=True)
 
     return app
