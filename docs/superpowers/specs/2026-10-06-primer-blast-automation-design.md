@@ -292,3 +292,27 @@ class DesignRequest:
 - 설정: 1단계 설정 저장 뒤에도 2단계 값이 남는지.
 
 완료 판정: 자동 시험이 모두 통과하고, 사람이 서열 3개(그대로 / 구간 지정 / 박사님 프라이머)로 실제 사이트에 한 번 돌린 엑셀이 같은 조건으로 사이트에서 직접 돌린 결과와 일치한다.
+
+## 14. 용어 전환 (2026-10-06 추가)
+
+화면 용어는 비전공자도 읽기 쉬운 한국어가 기본이고, 박사님이 Primer-BLAST 사이트와 같은 영어 용어로 바꿀 수 있게 한다.
+
+| 결정 | 선택 |
+|---|---|
+| 바꾸는 범위 | 전문 용어만. 버튼·안내 문장·진행 상태·메모 내용은 한국어 유지 |
+| 적용 위치 | 2단계 화면의 칸 이름과 표 머리글, 엑셀 머리글 21칸과 시트 이름. 1단계 화면은 그대로 |
+| 설정 | 2단계 화면 오른쪽 위 `용어` 선택 상자(한국어/English). 바꾸면 바로 적용하고 `config.json`의 `terms`(`ko`/`en`, 기본 `ko`)에 저장 |
+| 엑셀 | 설계 시작 때의 `terms`를 작업 입력(`DesignRequest.terms`)으로 받아 머리글을 고른다. 잘못된 값은 400 |
+
+| 키 | 한국어 | English |
+|---|---|---|
+| accession | 서열 번호 | Accession |
+| range_start / range_end | 구간 시작 / 구간 끝 | Range from / Range to |
+| forward / reverse | 앞쪽 프라이머 / 뒤쪽 프라이머 | Forward primer / Reverse primer |
+| product_size | 조각 길이 | PCR product size |
+| tm | 녹는 온도 | Primer Tm |
+| num_return | 후보 개수 | # of primers to return |
+| organism | 생물종 | Organism |
+
+함께 고치는 문제: `POST /api/config`는 받은 값에 이메일·API 키가 없으면 실행 중인 클라이언트의 이메일·키를 빈 값으로 덮어썼다. 저장 뒤 `config.load()`로 다시 읽어 맞춘다.
+

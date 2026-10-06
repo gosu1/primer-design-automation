@@ -2067,3 +2067,565 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 3. 설계 시작 → 약 5분 뒤 완료를 확인한다.
 4. 같은 조건으로 브라우저에서 Primer-BLAST를 직접 돌려, 엑셀의 첫 후보 서열·위치·녹는 온도·조각 길이가 사이트 화면과 같은지 비교한다.
 5. 결과를 사용자에게 보고한다. 다르면 고치기 전에 원인을 먼저 찾는다.
+
+---
+
+### Task 9: 용어 전환 (한국어 기본, 영어 선택)
+
+설계 문서 14절. 전문 용어만 한국어와 Primer-BLAST 영어 사이에서 바꾸고, 설정은 `config.json`의 `terms`에 둔다. 설정 저장 경로가 이메일·API 키를 지우는 문제도 함께 고친다.
+
+**Files:**
+- Modify: `app/config.py`, `app/designer.py`, `app/main.py`, `app/static/primer.html`, `README.md`
+- Test: `tests/test_config.py`, `tests/test_designer.py`, `tests/test_main.py`
+
+**Interfaces:**
+- Consumes: Task 1~8 결과 전부.
+- Produces: `config.DEFAULTS["terms"] = "ko"`. `designer.HEADERS_EN`(21칸), `designer.SHEET_TITLE_EN = "Results"`, `designer.TERMS = ("ko", "en")`. `write_workbook(path, rows, terms="ko")`. `DesignRequest.terms`(기본 `"ko"`), `request_from_json`은 body의 `terms`(없으면 `"ko"`)를 검사한다. `Designer._save(path, sheet, terms, final)`. `POST /api/design` body에 `terms`. 화면: `<select id="terms">`, 용어 자리는 `data-term` 속성.
+
+- [ ] **Step 1: 시험을 바꾼다**
+
+아래 수정은 모두 "찾아서 바꾸기"다. 찾는 부분은 파일에 정확히 한 번 있다.
+
+1. `tests/test_config.py`에서 다음 부분을 찾아서
+
+```python
+    assert loaded["results_dir"].endswith("primer_results")
+```
+
+   다음으로 바꾼다.
+
+```python
+    assert loaded["results_dir"].endswith("primer_results")
+    assert loaded["terms"] == "ko"
+```
+
+2. `tests/test_designer.py`에서 다음 부분을 찾아서
+
+```python
+from app.designer import (
+    HEADERS, MAX_ROWS, Designer, DesignRequest, accessions_in_folder, excel_rows, request_from_json,
+    write_workbook,
+)
+```
+
+   다음으로 바꾼다.
+
+```python
+from app.designer import (
+    HEADERS, HEADERS_EN, MAX_ROWS, Designer, DesignRequest, accessions_in_folder, excel_rows, request_from_json,
+    write_workbook,
+)
+```
+
+3. `tests/test_designer.py`에서 다음 부분을 찾아서
+
+```python
+def test_write_workbook_roundtrip(tmp_path):
+```
+
+   다음으로 바꾼다.
+
+```python
+def test_write_workbook_in_english(tmp_path):
+    path = str(tmp_path / "r.xlsx")
+    write_workbook(path, excel_rows(Row("NM_1"), found(1)), "en")
+    book = load_workbook(path)
+    assert book.sheetnames == ["Results"]
+    values = list(book["Results"].values)
+    assert list(values[0]) == HEADERS_EN and len(HEADERS_EN) == len(HEADERS)
+    assert values[1][3] == "AAAA"
+
+
+def test_write_workbook_roundtrip(tmp_path):
+```
+
+4. `tests/test_designer.py`에서 다음 부분을 찾아서
+
+```python
+    assert not req.folder.startswith("~")
+
+
+@pytest.mark.parametrize("change, message", [
+```
+
+   다음으로 바꾼다.
+
+```python
+    assert not req.folder.startswith("~")
+    assert req.terms == "ko"
+    assert request_from_json({**GOOD, "terms": "en"}).terms == "en"
+
+
+@pytest.mark.parametrize("change, message", [
+```
+
+5. `tests/test_designer.py`에서 다음 부분을 찾아서
+
+```python
+    ({"common": {**GOOD["common"], "product_min": "70.5"}}, "조각 길이 최소"),
+])
+```
+
+   다음으로 바꾼다.
+
+```python
+    ({"common": {**GOOD["common"], "product_min": "70.5"}}, "조각 길이 최소"),
+    ({"terms": "fr"}, "용어 설정"),
+])
+```
+
+6. `tests/test_designer.py`에서 다음 부분을 찾아서
+
+```python
+    def locked(path, rows):
+        if not path.endswith("_2.xlsx"):
+            raise PermissionError(path)
+        real(path, rows)
+```
+
+   다음으로 바꾼다.
+
+```python
+    def locked(path, rows, terms="ko"):
+        if not path.endswith("_2.xlsx"):
+            raise PermissionError(path)
+        real(path, rows, terms)
+```
+
+7. `tests/test_main.py`에서 다음 부분을 찾아서
+
+```python
+    assert "프라이머 설계".encode() in r.data
+```
+
+   다음으로 바꾼다.
+
+```python
+    assert "프라이머 설계".encode() in r.data
+    assert b'id="terms"' in r.data and b'data-term="forward"' in r.data
+```
+
+그리고 다음을 붙인다.
+
+`tests/test_designer.py` 끝에 다음을 붙인다(기존 내용과 빈 줄 두 개 띄움).
+
+```python
+def test_excel_headers_follow_request_terms(tmp_path):
+    d = Designer(FakeClient([found()]))
+    d.between_jobs = 0
+    d.start(DesignRequest(rows=[Row("NM_0")], common=Common(), folder=str(tmp_path), terms="en"))
+    d.wait()
+    book = load_workbook(d.status()["file"])
+    assert book.sheetnames == ["Results"]
+    assert list(next(book["Results"].values)) == HEADERS_EN
+```
+
+`tests/test_main.py` 끝에 다음을 붙인다(기존 내용과 빈 줄 두 개 띄움).
+
+```python
+def test_saving_one_setting_keeps_client_key(web):
+    web.post("/api/config", json={"email": "a@b.c", "api_key": "K", "per_item": True, "combined": False})
+    assert web.post("/api/config", json={"terms": "en"}).status_code == 200
+    assert web.get("/api/config").get_json()["terms"] == "en"
+    assert web.application.client.email == "a@b.c" and web.application.client.api_key == "K"
+
+
+def test_design_passes_terms(web):
+    assert web.post("/api/design", json={**DESIGN_BODY, "terms": "en"}).status_code == 200
+    assert web.application.designer.started[0].terms == "en"
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `.venv/bin/python -m pytest -q`
+Expected: `1 error` (`ImportError: cannot import name 'HEADERS_EN' from 'app.designer'`)
+
+- [ ] **Step 3: 구현한다**
+
+1. `app/config.py`에서 다음 부분을 찾아서
+
+```python
+"""config.json 읽기/쓰기. 이메일·API 키·저장 방식 체크박스 상태와 프라이머 설계 조건을 담는다."""
+```
+
+   다음으로 바꾼다.
+
+```python
+"""config.json 읽기/쓰기. 이메일·API 키·저장 방식 체크박스 상태와 프라이머 설계 조건, 용어 설정을 담는다."""
+```
+
+2. `app/config.py`에서 다음 부분을 찾아서
+
+```python
+    "results_dir": os.path.join(os.path.expanduser("~"), "Downloads", "primer_results"),
+}
+```
+
+   다음으로 바꾼다.
+
+```python
+    "results_dir": os.path.join(os.path.expanduser("~"), "Downloads", "primer_results"),
+    "terms": "ko",   # 2단계 화면과 엑셀의 전문 용어: ko(한국어) / en(Primer-BLAST 영어)
+}
+```
+
+3. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+PAIR_COLUMNS = 16   # 후보 순번부터 잘못 붙는 대상(다른 유전자)까지
+```
+
+   다음으로 바꾼다.
+
+```python
+HEADERS_EN = [
+    "Accession", "Title", "Pair",
+    "Forward primer", "Forward start", "Forward stop", "Forward length", "Forward Tm", "Forward GC%",
+    "Reverse primer", "Reverse start", "Reverse stop", "Reverse length", "Reverse Tm", "Reverse GC%",
+    "Product length", "Unintended targets (same gene)", "Unintended targets (other gene)",
+    "Accepted similar sequences", "Result URL", "Note",
+]
+SHEET_TITLE_EN = "Results"
+TERMS = ("ko", "en")
+PAIR_COLUMNS = 16   # 후보 순번부터 잘못 붙는 대상(다른 유전자)까지
+```
+
+4. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+def write_workbook(path: str, rows: List[list]):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = SHEET_TITLE
+    sheet.append(HEADERS)
+```
+
+   다음으로 바꾼다.
+
+```python
+def write_workbook(path: str, rows: List[list], terms: str = "ko"):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = SHEET_TITLE_EN if terms == "en" else SHEET_TITLE
+    sheet.append(HEADERS_EN if terms == "en" else HEADERS)
+```
+
+5. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+    rows: List[Row]
+    common: Common
+    folder: str
+```
+
+   다음으로 바꾼다.
+
+```python
+    rows: List[Row]
+    common: Common
+    folder: str
+    terms: str = "ko"   # 엑셀 머리글 용어
+```
+
+6. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+    if not folder:
+        raise ValueError("저장 폴더를 입력하세요")
+```
+
+   다음으로 바꾼다.
+
+```python
+    if not folder:
+        raise ValueError("저장 폴더를 입력하세요")
+    terms = body.get("terms") or "ko"
+    if terms not in TERMS:
+        raise ValueError("용어 설정 값이 올바르지 않습니다: %s" % terms)
+```
+
+7. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+    return DesignRequest(rows=rows, common=common, folder=os.path.expanduser(folder))
+```
+
+   다음으로 바꾼다.
+
+```python
+    return DesignRequest(rows=rows, common=common, folder=os.path.expanduser(folder), terms=terms)
+```
+
+8. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+                self._save(path, sheet, final=False)
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    self._save(path, sheet, final=True)
+```
+
+   다음으로 바꾼다.
+
+```python
+                self._save(path, sheet, request.terms, final=False)
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    self._save(path, sheet, request.terms, final=True)
+```
+
+9. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+            self._save(path, sheet, final=True)
+            self._set(phase="stopped" if self._stop.is_set() else "done", current="")
+```
+
+   다음으로 바꾼다.
+
+```python
+            self._save(path, sheet, request.terms, final=True)
+            self._set(phase="stopped" if self._stop.is_set() else "done", current="")
+```
+
+10. `app/designer.py`에서 다음 부분을 찾아서
+
+```python
+    def _save(self, path: str, sheet: List[list], final: bool):
+        if not sheet:
+            return
+        try:
+            write_workbook(path, sheet)
+        except PermissionError:
+            if not final:
+                return  # 박사님이 파일을 열어 둠: 다음 저장 때 다시 시도한다
+            path = path[:-len(".xlsx")] + "_2.xlsx"
+            write_workbook(path, sheet)
+```
+
+   다음으로 바꾼다.
+
+```python
+    def _save(self, path: str, sheet: List[list], terms: str, final: bool):
+        if not sheet:
+            return
+        try:
+            write_workbook(path, sheet, terms)
+        except PermissionError:
+            if not final:
+                return  # 박사님이 파일을 열어 둠: 다음 저장 때 다시 시도한다
+            path = path[:-len(".xlsx")] + "_2.xlsx"
+            write_workbook(path, sheet, terms)
+```
+
+11. `app/main.py`에서 다음 부분을 찾아서
+
+```python
+    def set_config():
+        body = request.get_json(force=True)
+        config.save(body)
+        app.client.email = body.get("email", "")
+        app.client.api_key = body.get("api_key", "")
+        return jsonify(ok=True)
+```
+
+   다음으로 바꾼다.
+
+```python
+    def set_config():
+        config.save(request.get_json(force=True))
+        # 받은 값에 없는 항목(예: 용어만 저장)이 키를 지우지 않도록 저장된 값으로 맞춘다
+        settings = config.load()
+        app.client.email = settings["email"]
+        app.client.api_key = settings["api_key"]
+        return jsonify(ok=True)
+```
+
+12. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  nav { display: flex; gap: 16px; margin-bottom: 12px; font-size: 14px; }
+```
+
+   다음으로 바꾼다.
+
+```html
+  nav { display: flex; gap: 16px; margin-bottom: 12px; font-size: 14px; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+```
+
+13. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+<h1>프라이머 설계 (Primer-BLAST)</h1>
+```
+
+   다음으로 바꾼다.
+
+```html
+<header>
+  <h1>프라이머 설계 (Primer-BLAST)</h1>
+  <label>용어 <select id="terms"><option value="ko">한국어</option><option value="en">English</option></select></label>
+</header>
+```
+
+14. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  <div class="row">서열 번호 직접 입력 <input type="text" id="acc-input"
+```
+
+   다음으로 바꾼다.
+
+```html
+  <div class="row"><span data-term="accession">서열 번호</span> 직접 입력 <input type="text" id="acc-input"
+```
+
+15. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  <div class="row">조각 길이 최소 <input type="text" id="product_min" class="num">
+```
+
+   다음으로 바꾼다.
+
+```html
+  <div class="row"><span data-term="product_size">조각 길이</span> 최소 <input type="text" id="product_min" class="num">
+```
+
+16. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  <div class="row">녹는 온도 최소 <input type="text" id="tm_min" class="num">
+```
+
+   다음으로 바꾼다.
+
+```html
+  <div class="row"><span data-term="tm">녹는 온도</span> 최소 <input type="text" id="tm_min" class="num">
+```
+
+17. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  <div class="row">후보 개수 <input type="text" id="num_return" class="num">
+    생물종 <input type="text" id="organism"
+```
+
+   다음으로 바꾼다.
+
+```html
+  <div class="row"><span data-term="num_return">후보 개수</span> <input type="text" id="num_return" class="num">
+    <span data-term="organism">생물종</span> <input type="text" id="organism"
+```
+
+18. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+    <thead><tr><th>서열 번호</th><th>구간 시작</th><th>구간 끝</th><th>앞쪽 프라이머</th><th>뒤쪽 프라이머</th><th>상태</th><th></th></tr></thead>
+```
+
+   다음으로 바꾼다.
+
+```html
+    <thead><tr><th data-term="accession">서열 번호</th><th data-term="range_start">구간 시작</th><th data-term="range_end">구간 끝</th>
+      <th data-term="forward">앞쪽 프라이머</th><th data-term="reverse">뒤쪽 프라이머</th><th>상태</th><th></th></tr></thead>
+```
+
+19. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+const COMMON = ["product_min", "product_max", "tm_min", "tm_opt", "tm_max", "num_return", "organism"];
+```
+
+   다음으로 바꾼다.
+
+```html
+const COMMON = ["product_min", "product_max", "tm_min", "tm_opt", "tm_max", "num_return", "organism"];
+// 전문 용어만 바꾼다. 버튼과 안내 문장은 한국어로 둔다.
+const TERMS = {
+  ko: { accession: "서열 번호", range_start: "구간 시작", range_end: "구간 끝", forward: "앞쪽 프라이머",
+        reverse: "뒤쪽 프라이머", product_size: "조각 길이", tm: "녹는 온도", num_return: "후보 개수", organism: "생물종" },
+  en: { accession: "Accession", range_start: "Range from", range_end: "Range to", forward: "Forward primer",
+        reverse: "Reverse primer", product_size: "PCR product size", tm: "Primer Tm", num_return: "# of primers to return",
+        organism: "Organism" },
+};
+```
+
+20. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+// ---- 설정
+async function loadConfig() {
+  const c = await api("/api/config");
+  COMMON.forEach(k => { $(k).value = c[k]; });
+```
+
+   다음으로 바꾼다.
+
+```html
+// ---- 설정
+function applyTerms(lang) {
+  const key = lang === "en" ? "en" : "ko";
+  document.querySelectorAll("[data-term]").forEach(el => { el.textContent = TERMS[key][el.dataset.term]; });
+  $("terms").value = key;
+}
+$("terms").onchange = () => { applyTerms($("terms").value); postJson("/api/config", { terms: $("terms").value }).catch(report); };
+async function loadConfig() {
+  const c = await api("/api/config");
+  applyTerms(c.terms);
+  COMMON.forEach(k => { $(k).value = c[k]; });
+```
+
+21. `app/static/primer.html`에서 다음 부분을 찾아서
+
+```html
+  postJson("/api/design", { rows, common, folder: $("folder").value.trim() })
+```
+
+   다음으로 바꾼다.
+
+```html
+  postJson("/api/design", { rows, common, folder: $("folder").value.trim(), terms: $("terms").value })
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `.venv/bin/python -m pytest -q`
+Expected: 121 passed, 1 skipped
+
+- [ ] **Step 5: README에 안내를 넣는다**
+
+1. `README.md`에서 다음 부분을 찾아서
+
+```markdown
+6. 끝나면 저장 폴더에 `primers_날짜_시각.xlsx`가 생깁니다. 도중에 **중단**해도 끝난 서열의 결과는 남습니다.
+```
+
+   다음으로 바꾼다.
+
+```markdown
+6. 끝나면 저장 폴더에 `primers_날짜_시각.xlsx`가 생깁니다. 도중에 **중단**해도 끝난 서열의 결과는 남습니다.
+
+화면 오른쪽 위 **용어**에서 English를 고르면 전문 용어(서열 번호, 구간, 프라이머, 조각 길이, 녹는 온도, 후보 개수, 생물종)가
+Primer-BLAST 웹사이트와 같은 영어(Accession, Range, Forward/Reverse primer, PCR product size, Tm 등)로 바뀌고,
+엑셀 머리글과 시트 이름도 영어로 저장됩니다. 버튼과 안내 문장은 한국어 그대로이며, 고른 값은 다음에도 유지됩니다.
+```
+
+- [ ] **Step 6: 화면을 확인한다 (사이트 접속 없음)**
+
+Task 7 Step 5의 가짜 서버로 띄우고 확인한다.
+- 오른쪽 위 `용어`를 English로 바꾸면 칸 이름과 표 머리글이 Accession, Range from/to, Forward/Reverse primer, PCR product size, Primer Tm, # of primers to return, Organism으로 바뀌고, 버튼과 안내 문장은 한국어로 남는다.
+- 새로고침해도 English가 유지되고, 설정 파일의 `terms`가 `"en"`이다.
+- 설계 시작 → 저장된 엑셀의 시트 이름이 `Results`, 머리글이 `HEADERS_EN`과 같다. 메모 칸 내용("후보 없음" 등)은 한국어다.
+- 한국어로 되돌리면 용어가 원래대로 돌아오고 `terms`가 `"ko"`로 저장된다.
+
+- [ ] **Step 7: 커밋한다**
+
+```bash
+git add app/config.py app/designer.py app/main.py app/static/primer.html README.md tests/test_config.py tests/test_designer.py tests/test_main.py
+git commit -m "feat: 2단계 화면과 엑셀의 전문 용어를 한국어/영어로 전환하는 설정 추가
+
+설정 저장 경로가 받은 값에 없는 이메일·API 키를 지우던 문제도 함께 고침.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
