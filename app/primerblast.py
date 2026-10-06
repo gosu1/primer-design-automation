@@ -275,3 +275,73 @@ def build_fields(defaults: Fields, row: Row, common: Common) -> Fields:
     if common.organism:
         override["ORGANISM"] = common.organism
     return [(name, override.get(name, value)) for name, value in defaults]
+
+
+class PrimerBlastClient:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = USER_AGENT
+        self._sleep = time.sleep
+        self._clock = time.monotonic
+        self._defaults: Optional[Fields] = None
+
+    def design(self, row: Row, common: Common, should_stop: Callable[[], bool]) -> Outcome:
+        if self._defaults is None:
+            self._defaults = parse_form_defaults(self._request("GET", BASE_URL).text)
+        fields = build_fields(self._defaults, row, common)
+        page = self._request("POST", SUBMIT_URL, files=[(n, (None, v)) for n, v in fields]).text
+        deadline = self._clock() + JOB_TIMEOUT
+        reviewed = False
+        accepted: List[str] = []
+        url = ""   # 결과를 GET으로 받았을 때만 그 주소를 남긴다
+        while True:
+            kind = page_kind(page)
+            if kind == "review":
+                if reviewed:
+                    raise PrimerBlastError("확인 화면이 반복됨")
+                reviewed = True
+                hidden, title, hits = parse_review(page)
+                chosen = pick_same_gene(title, hits)
+                accepted = list(dict.fromkeys(h.accession for h in chosen))  # 같은 번호가 구간만 달리해 두 번 나올 수 있다
+                page = self._request("POST", SUBMIT_URL, data=hidden + [("USER_SEQLOC", h.seqloc) for h in chosen]).text
+                url = ""
+                continue
+            if kind == "results":
+                try:
+                    outcome = parse_results(page)
+                except Exception:  # 사이트 구조가 바뀐 경우: 원문을 남겨 개발자가 고치게 한다
+                    return Outcome(accepted=accepted, url=url, note=UNREADABLE, failed=True, raw_page=page)
+                outcome.accepted, outcome.url = accepted, url
+                return outcome
+            if kind == "error":
+                return Outcome(accepted=accepted, url=url, note=error_message(page), failed=True)
+            key = job_key(page)
+            if kind == "unknown" or not key:
+                return Outcome(accepted=accepted, url=url, note=UNREADABLE, failed=True, raw_page=page)
+            self._pause(POLL_INTERVAL, deadline, should_stop)
+            page = self._request("GET", SUBMIT_URL, params={"job_key": key}).text
+            url = SUBMIT_URL + "?job_key=" + key
+
+    def _pause(self, seconds: float, deadline: float, should_stop: Callable[[], bool]):
+        end = self._clock() + seconds
+        while self._clock() < end:
+            if should_stop():
+                raise PrimerBlastError("중단")
+            if self._clock() >= deadline:
+                raise PrimerBlastError("시간 초과 (%d분)" % (JOB_TIMEOUT // 60))
+            self._sleep(min(1.0, end - self._clock()))
+
+    def _request(self, method: str, url: str, **kwargs):
+        for wait in RETRY_WAITS + (None,):
+            try:
+                resp = self.session.request(method, url, timeout=TIMEOUT, **kwargs)
+            except requests.RequestException:
+                resp = None
+            if resp is not None:
+                if resp.status_code == 200:
+                    return resp
+                if resp.status_code != 429 and resp.status_code < 500:
+                    raise PrimerBlastError("사이트가 요청을 거부했습니다 (HTTP %d)" % resp.status_code)
+            if wait is None:
+                raise PrimerBlastError("사이트 응답이 없습니다")
+            self._sleep(wait)

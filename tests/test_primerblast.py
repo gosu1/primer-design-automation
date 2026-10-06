@@ -1,10 +1,12 @@
 import os
 
 import pytest
+import requests
 
 from app.primerblast import (
-    Common, Hit, PrimerBlastError, Row, build_fields, error_message, gene_symbol, job_key, page_kind,
-    parse_form_defaults, parse_results, parse_review, pick_same_gene,
+    BASE_URL, JOB_TIMEOUT, POLL_INTERVAL, SUBMIT_URL, Common, Hit, PrimerBlastClient, PrimerBlastError, Row,
+    build_fields, error_message, gene_symbol, job_key, page_kind, parse_form_defaults, parse_results,
+    parse_review, pick_same_gene,
 )
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "primerblast")
@@ -132,3 +134,157 @@ def test_build_fields_overrides_only_given_values():
         "PRIMER_NUM_RETURN": "5", "ORGANISM": "Homo sapien (taxid:9606)", "CMD": "request",
     }
     assert dict(build_fields(defaults, row, Common(organism="Mus musculus")))["ORGANISM"] == "Mus musculus"
+
+
+# ---- 제출 흐름 (가짜 사이트)
+
+class FakeResponse:
+    def __init__(self, text="", status_code=200):
+        self.text = text
+        self.status_code = status_code
+
+
+class FakeSession:
+    """준비된 응답을 순서대로 돌려주고 받은 요청을 기록한다. 문자열은 200 응답, 예외 객체는 던진다."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.headers = {}
+
+    def request(self, method, url, timeout=None, **kwargs):
+        self.calls.append((method, url, kwargs))
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return FakeResponse(item) if isinstance(item, str) else item
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def make_client(responses):
+    client = PrimerBlastClient()
+    client.session = FakeSession(responses)
+    client.clock = FakeClock()
+    client._sleep = client.clock.sleep
+    client._clock = lambda: client.clock.now
+    return client
+
+
+def never():
+    return False
+
+
+def test_user_agent_names_the_tool():
+    assert "primer-design-automation" in PrimerBlastClient().session.headers["User-Agent"]
+
+
+def test_design_full_flow_with_review():
+    client = make_client([page("form.html"), page("waiting.html"), page("review.html"),
+                          page("waiting.html"), page("results.html")])
+    outcome = client.design(Row("NM_000546"), Common(), never)
+    assert len(outcome.pairs) == 10 and not outcome.failed
+    assert outcome.accepted == ["NM_001276761.3", "NM_001407262.1", "NM_001407266.1", "NM_001407265.1"]
+    assert outcome.url == SUBMIT_URL + "?job_key=JOBKEY"
+    calls = client.session.calls
+    assert [(m, u) for m, u, _ in calls] == [("GET", BASE_URL), ("POST", SUBMIT_URL), ("GET", SUBMIT_URL),
+                                            ("POST", SUBMIT_URL), ("GET", SUBMIT_URL)]
+    submitted = dict((name, value) for name, (_, value) in calls[1][2]["files"])
+    assert submitted["INPUT_SEQUENCE"] == "NM_000546" and submitted["PRIMER_PRODUCT_MIN"] == "70"
+    assert calls[2][2]["params"] == {"job_key": "JOBKEY"}
+    review_post = calls[3][2]["data"]
+    assert [v for n, v in review_post if n == "USER_SEQLOC"] == [
+        "ref|NM_001276761.3|?0?2508", "ref|NM_001407262.1|?216?2614", "ref|NM_001407262.1|?0?113",
+        "ref|NM_001407266.1|?126?2524", "ref|NM_001407265.1|?124?2521"]
+    assert ("INPUT_SEQUENCE", "NM_000546") in review_post
+    assert client.clock.sleeps == [1.0] * (2 * POLL_INTERVAL)
+
+
+def test_form_is_read_once_per_client():
+    client = make_client([page("form.html"), page("error.html"), page("error.html")])
+    client.design(Row("NM_99999999"), Common(), never)
+    client.design(Row("NM_99999998"), Common(), never)
+    assert [m for m, _, _ in client.session.calls] == ["GET", "POST", "POST"]
+
+
+def test_site_error_becomes_failed_outcome():
+    client = make_client([page("form.html"), page("error.html")])
+    outcome = client.design(Row("NM_99999999"), Common(), never)
+    assert outcome.failed and outcome.pairs == []
+    assert outcome.note == "Exception error: Sequence ID not found: 'ref|NM_99999999|'"
+
+
+def test_no_primers_is_not_a_failure():
+    client = make_client([page("form.html"), page("waiting.html"), page("no_primers.html")])
+    outcome = client.design(Row("NM_000546"), Common(), never)
+    assert not outcome.failed and outcome.pairs == []
+    assert outcome.note.startswith("후보 없음")
+    assert outcome.url == SUBMIT_URL + "?job_key=JOBKEY"
+
+
+def test_results_right_after_review_have_no_url():
+    client = make_client([page("form.html"), page("review.html"), page("no_primers.html")])
+    outcome = client.design(Row("NM_000546"), Common(), never)
+    assert outcome.url == "" and len(outcome.accepted) == 4
+
+
+def test_unknown_page_keeps_raw_page():
+    client = make_client([page("form.html"), "<html>점검 중</html>"])
+    outcome = client.design(Row("NM_000546"), Common(), never)
+    assert outcome.failed and outcome.note == "결과 페이지를 읽지 못함"
+    assert outcome.raw_page == "<html>점검 중</html>"
+
+
+def test_unparseable_results_keep_raw_page():
+    broken = '<div class="prPairInfo"><input type="hidden" value="x" name="FW_PRIMER_SEQ_0"/>'
+    client = make_client([page("form.html"), broken])
+    outcome = client.design(Row("NM_000546"), Common(), never)
+    assert outcome.failed and outcome.raw_page == broken
+
+
+def test_second_review_raises():
+    client = make_client([page("form.html"), page("review.html"), page("review.html")])
+    with pytest.raises(PrimerBlastError, match="확인 화면이 반복됨"):
+        client.design(Row("NM_000546"), Common(), never)
+
+
+def test_retries_network_errors_then_succeeds():
+    client = make_client([page("form.html"), requests.ConnectionError("x"), FakeResponse("", 503),
+                          page("error.html")])
+    outcome = client.design(Row("NM_99999999"), Common(), never)
+    assert outcome.failed
+    assert client.clock.sleeps == [2, 4]
+
+
+def test_gives_up_after_retries():
+    client = make_client([page("form.html")] + [FakeResponse("", 503)] * 4)
+    with pytest.raises(PrimerBlastError, match="응답이 없습니다"):
+        client.design(Row("NM_000546"), Common(), never)
+    assert client.clock.sleeps == [2, 4, 8]
+
+
+def test_client_error_is_not_retried():
+    client = make_client([page("form.html"), FakeResponse("", 403)])
+    with pytest.raises(PrimerBlastError, match="HTTP 403"):
+        client.design(Row("NM_000546"), Common(), never)
+
+
+def test_times_out_when_results_never_come():
+    client = make_client([page("form.html")] + [page("waiting.html")] * 100)
+    with pytest.raises(PrimerBlastError, match="시간 초과"):
+        client.design(Row("NM_000546"), Common(), never)
+    assert client.clock.now <= JOB_TIMEOUT + 1
+
+
+def test_stop_while_waiting():
+    client = make_client([page("form.html"), page("waiting.html")])
+    with pytest.raises(PrimerBlastError, match="중단"):
+        client.design(Row("NM_000546"), Common(), lambda: True)
