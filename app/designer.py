@@ -118,3 +118,97 @@ def request_from_json(body: dict) -> DesignRequest:
             right=str(item.get("right") or "").strip(),
         ))
     return DesignRequest(rows=rows, common=common, folder=os.path.expanduser(folder))
+
+
+class Designer:
+    """한 번에 작업 하나만 돌린다. 상태는 status()로 읽는다."""
+
+    def __init__(self, client):
+        self.client = client
+        self.between_jobs = BETWEEN_JOBS
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._state = {"phase": "idle", "total": 0, "done": 0, "current": "", "rows": [], "file": "", "message": ""}
+
+    def status(self) -> dict:
+        with self._lock:
+            return dict(self._state)
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, request: DesignRequest):
+        if self.is_running():
+            raise RuntimeError("이미 설계 중입니다")
+        self._stop.clear()
+        self._set(phase="running", total=len(request.rows), done=0, current="", file="", message="",
+                  rows=[{"accession": r.accession, "status": "대기", "note": ""} for r in request.rows])
+        self._thread = threading.Thread(target=self._run, args=(request,), daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def wait(self):
+        if self._thread is not None:
+            self._thread.join()
+
+    def _set(self, **fields):
+        with self._lock:
+            self._state.update(fields)
+
+    def _mark(self, index: int, status: str, note: str = ""):
+        with self._lock:
+            rows = [dict(r) for r in self._state["rows"]]
+            rows[index].update(status=status, note=note)
+            self._state["rows"] = rows
+
+    def _run(self, request: DesignRequest):
+        try:
+            os.makedirs(request.folder, exist_ok=True)
+            path = os.path.join(request.folder, time.strftime("primers_%Y%m%d_%H%M.xlsx"))
+            sheet: List[list] = []
+            failures = 0
+            for i, row in enumerate(request.rows):
+                if (i and self._stop.wait(self.between_jobs)) or self._stop.is_set():
+                    break
+                self._mark(i, "진행 중")
+                self._set(current=row.accession)
+                try:
+                    outcome = self.client.design(row, request.common, self._stop.is_set)
+                    failures = 0
+                except PrimerBlastError as exc:
+                    if self._stop.is_set():
+                        self._mark(i, "중단")
+                        break
+                    failures += 1
+                    outcome = Outcome(note=str(exc), failed=True)
+                sheet.extend(excel_rows(row, outcome))
+                if outcome.raw_page:
+                    with open(os.path.join(request.folder, safe_filename(row.accession) + "_page.html"),
+                              "w", encoding="utf-8", newline="\n") as f:
+                        f.write(outcome.raw_page)
+                self._mark(i, "실패" if outcome.failed else ("완료" if outcome.pairs else "후보 없음"), outcome.note)
+                self._set(done=i + 1, current="")
+                self._save(path, sheet, final=False)
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    self._save(path, sheet, final=True)
+                    self._set(phase="error", current="", message="연속으로 실패해 멈췄습니다. 사이트 상태를 확인하세요.")
+                    return
+            self._save(path, sheet, final=True)
+            self._set(phase="stopped" if self._stop.is_set() else "done", current="")
+        except Exception as exc:  # OSError 등: 이유를 화면에 보여 준다
+            self._set(phase="error", current="", message=str(exc))
+
+    def _save(self, path: str, sheet: List[list], final: bool):
+        if not sheet:
+            return
+        try:
+            write_workbook(path, sheet)
+        except PermissionError:
+            if not final:
+                return  # 박사님이 파일을 열어 둠: 다음 저장 때 다시 시도한다
+            path = path[:-len(".xlsx")] + "_2.xlsx"
+            write_workbook(path, sheet)
+        self._set(file=path)

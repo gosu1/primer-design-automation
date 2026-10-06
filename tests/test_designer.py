@@ -1,8 +1,14 @@
+import threading
+
 import pytest
 from openpyxl import load_workbook
 
-from app.designer import HEADERS, MAX_ROWS, accessions_in_folder, excel_rows, request_from_json, write_workbook
-from app.primerblast import Common, Outcome, Pair, Primer, Row
+from app import designer
+from app.designer import (
+    HEADERS, MAX_ROWS, Designer, DesignRequest, accessions_in_folder, excel_rows, request_from_json,
+    write_workbook,
+)
+from app.primerblast import Common, Outcome, Pair, Primer, PrimerBlastError, Row
 
 
 def pair(n=1):
@@ -80,3 +86,143 @@ def test_request_from_json():
 def test_request_from_json_rejects(change, message):
     with pytest.raises(ValueError, match=message):
         request_from_json({**GOOD, **change})
+
+
+# ---- 작업
+
+class FakeClient:
+    """준비된 결과를 순서대로 돌려준다. 예외는 던지고, 함수는 should_stop을 받아 실행한다."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def design(self, row, common, should_stop):
+        self.calls.append(row.accession)
+        item = self.results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if callable(item):
+            return item(should_stop)
+        return item
+
+
+def run(client, tmp_path, n_rows):
+    d = Designer(client)
+    d.between_jobs = 0
+    d.start(DesignRequest(rows=[Row("NM_%d" % i) for i in range(n_rows)], common=Common(),
+                          folder=str(tmp_path / "out")))
+    d.wait()
+    return d
+
+
+def sheet_rows(path):
+    return list(load_workbook(path)["결과"].values)[1:]
+
+
+def test_initial_status_is_idle():
+    assert Designer(FakeClient([])).status() == {
+        "phase": "idle", "total": 0, "done": 0, "current": "", "rows": [], "file": "", "message": ""}
+
+
+def test_runs_rows_in_order_and_saves_excel(tmp_path):
+    d = run(FakeClient([found(2), Outcome(title="t", note="후보 없음"), Outcome(note="Sequence ID not found", failed=True)]),
+            tmp_path, 3)
+    s = d.status()
+    assert s["phase"] == "done" and s["done"] == 3 and s["total"] == 3 and s["current"] == ""
+    assert [(r["status"], r["note"]) for r in s["rows"]] == [
+        ("완료", ""), ("후보 없음", "후보 없음"), ("실패", "Sequence ID not found")]
+    assert s["file"].startswith(str(tmp_path / "out" / "primers_")) and s["file"].endswith(".xlsx")
+    rows = sheet_rows(s["file"])
+    assert [r[0] for r in rows] == ["NM_0", "NM_0", "NM_1", "NM_2"]
+    assert rows[3][-1] == "Sequence ID not found"
+
+
+def test_stops_after_three_consecutive_failures(tmp_path):
+    client = FakeClient([PrimerBlastError("시간 초과 (10분)")] * 3 + [found()])
+    d = run(client, tmp_path, 4)
+    s = d.status()
+    assert s["phase"] == "error" and "연속으로 실패" in s["message"]
+    assert client.calls == ["NM_0", "NM_1", "NM_2"]
+    assert [r["status"] for r in s["rows"]] == ["실패", "실패", "실패", "대기"]
+    assert len(sheet_rows(s["file"])) == 3
+
+
+def test_success_resets_failure_count(tmp_path):
+    client = FakeClient([PrimerBlastError("x"), PrimerBlastError("x"), found(),
+                         PrimerBlastError("x"), PrimerBlastError("x")])
+    assert run(client, tmp_path, 5).status()["phase"] == "done"
+
+
+def test_site_error_outcome_does_not_count_as_failure(tmp_path):
+    client = FakeClient([PrimerBlastError("x"), PrimerBlastError("x"), Outcome(note="bad", failed=True),
+                         PrimerBlastError("x")])
+    assert run(client, tmp_path, 4).status()["phase"] == "done"
+
+
+def test_stop_keeps_finished_results(tmp_path):
+    d = Designer(None)
+
+    def stop_then_raise(should_stop):
+        d.stop()
+        assert should_stop() is True
+        raise PrimerBlastError("중단")
+
+    d.client = FakeClient([found(), stop_then_raise])
+    d.between_jobs = 0
+    d.start(DesignRequest(rows=[Row("NM_0"), Row("NM_1"), Row("NM_2")], common=Common(), folder=str(tmp_path)))
+    d.wait()
+    s = d.status()
+    assert s["phase"] == "stopped" and s["done"] == 1
+    assert [r["status"] for r in s["rows"]] == ["완료", "중단", "대기"]
+    assert [r[0] for r in sheet_rows(s["file"])] == ["NM_0"]
+
+
+def test_stop_before_any_result_writes_no_file(tmp_path):
+    d = Designer(None)
+
+    def stop_then_raise(should_stop):
+        d.stop()
+        raise PrimerBlastError("중단")
+
+    d.client = FakeClient([stop_then_raise])
+    d.start(DesignRequest(rows=[Row("NM_0")], common=Common(), folder=str(tmp_path)))
+    d.wait()
+    assert d.status()["phase"] == "stopped" and d.status()["file"] == ""
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unreadable_page_is_saved_next_to_excel(tmp_path):
+    d = run(FakeClient([Outcome(note="결과 페이지를 읽지 못함", failed=True, raw_page="<html>x</html>")]), tmp_path, 1)
+    assert (tmp_path / "out" / "NM_0_page.html").read_text() == "<html>x</html>"
+
+
+def test_locked_excel_is_saved_under_another_name(tmp_path, monkeypatch):
+    real = designer.write_workbook
+
+    def locked(path, rows):
+        if not path.endswith("_2.xlsx"):
+            raise PermissionError(path)
+        real(path, rows)
+
+    monkeypatch.setattr(designer, "write_workbook", locked)
+    s = run(FakeClient([found()]), tmp_path, 1).status()
+    assert s["phase"] == "done" and s["file"].endswith("_2.xlsx")
+    assert len(sheet_rows(s["file"])) == 1
+
+
+def test_start_while_running_is_rejected(tmp_path):
+    release = threading.Event()
+
+    def blocked(should_stop):
+        release.wait(5)
+        return found()
+
+    d = Designer(FakeClient([blocked]))
+    req = DesignRequest(rows=[Row("NM_0")], common=Common(), folder=str(tmp_path))
+    d.start(req)
+    with pytest.raises(RuntimeError):
+        d.start(req)
+    release.set()
+    d.wait()
+    assert d.status()["phase"] == "done"
