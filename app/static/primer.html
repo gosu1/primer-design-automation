@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프라이머 설계</title>
+<link rel="icon" href="data:,">
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; color: #222; }
+  nav { display: flex; gap: 16px; margin-bottom: 12px; font-size: 14px; }
+  nav a { color: #06c; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  section { margin-top: 16px; padding: 12px 16px; border: 1px solid #ddd; border-radius: 6px; }
+  input[type=text] { padding: 6px 8px; font-size: 14px; }
+  input.num { width: 64px; }
+  #organism { width: 220px; }
+  .wide { width: 70%; }
+  button { padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .5; }
+  #error { display: none; background: #fde8e8; color: #a00; padding: 10px 14px; border-radius: 6px; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: top; }
+  th { white-space: nowrap; }
+  td input { width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 13px; }
+  td input.pos { width: 72px; }
+  .note { color: #666; font-size: 12px; }
+  .row { margin-top: 8px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  progress { width: 100%; height: 18px; }
+  .hint { color: #666; font-size: 13px; }
+</style>
+</head>
+<body>
+<nav><a href="/">1. 서열 내려받기</a> <b>2. 프라이머 설계</b></nav>
+<h1>프라이머 설계 (Primer-BLAST)</h1>
+<div id="error"></div>
+
+<section>
+  <h2>서열 추가</h2>
+  <div class="row">폴더에서 불러오기 <input type="text" id="src-folder" class="wide"> <button id="load-folder">불러오기</button></div>
+  <div class="row">서열 번호 직접 입력 <input type="text" id="acc-input" class="wide" placeholder="예: NM_000546, NM_001126112 (쉼표·공백으로 구분)"> <button id="add-acc">추가</button></div>
+</section>
+
+<section>
+  <h2>공통 조건</h2>
+  <div class="row">조각 길이 최소 <input type="text" id="product_min" class="num"> 최대 <input type="text" id="product_max" class="num"></div>
+  <div class="row">녹는 온도 최소 <input type="text" id="tm_min" class="num"> 적정 <input type="text" id="tm_opt" class="num"> 최대 <input type="text" id="tm_max" class="num"></div>
+  <div class="row">후보 개수 <input type="text" id="num_return" class="num">
+    생물종 <input type="text" id="organism" placeholder="비우면 사람(Homo sapiens)"></div>
+</section>
+
+<section>
+  <div class="row" style="justify-content: space-between; margin-top: 0">
+    <h2>서열 목록 (<span id="row-count">0</span> / 50)</h2>
+    <button id="clear-rows">모두 지우기</button>
+  </div>
+  <table>
+    <thead><tr><th>서열 번호</th><th>구간 시작</th><th>구간 끝</th><th>앞쪽 프라이머</th><th>뒤쪽 프라이머</th><th>상태</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="hint">구간과 프라이머는 비워 두면 서열 전체에서 사이트가 설계합니다. 프라이머를 넣으면 그 프라이머를 검사합니다.</div>
+</section>
+
+<section>
+  <div class="row">저장 폴더 <input type="text" id="folder" class="wide"></div>
+  <div class="row"><button id="start">설계 시작</button> <span id="estimate" class="hint"></span></div>
+  <div id="progress-box" class="row" style="display:none">
+    <progress id="progress" value="0" max="1"></progress>
+    <div><span id="progress-label"></span> <button id="stop">중단</button></div>
+  </div>
+  <div id="result-box" class="row" style="display:none">
+    <span id="result-label"></span> <button id="open-folder">폴더 열기</button>
+  </div>
+</section>
+
+<script>
+const MAX_ROWS = 50;
+const COMMON = ["product_min", "product_max", "tm_min", "tm_opt", "tm_max", "num_return", "organism"];
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const state = { rows: [], running: false, folder: "" };
+
+async function api(path, options) {
+  const resp = await fetch(path, options);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || ("요청 실패 (HTTP " + resp.status + ")"));
+  hideError();
+  return data;
+}
+function postJson(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+function showError(msg) { $("error").textContent = msg; $("error").style.display = "block"; }
+function hideError() { $("error").style.display = "none"; }
+const report = e => showError(e.message);
+
+// ---- 설정
+async function loadConfig() {
+  const c = await api("/api/config");
+  COMMON.forEach(k => { $(k).value = c[k]; });
+  $("src-folder").value = c.downloads_dir;
+  $("folder").value = c.results_dir;
+}
+
+// ---- 서열 목록
+function addAccessions(list) {
+  const have = new Set(state.rows.map(r => r.accession));
+  for (const acc of list) {
+    if (have.has(acc)) continue;
+    if (state.rows.length >= MAX_ROWS) { showError("한 번에 " + MAX_ROWS + "개까지만 설계할 수 있습니다. 나머지는 추가하지 않았습니다."); break; }
+    state.rows.push({ accession: acc, start: "", end: "", left: "", right: "", status: "대기", note: "" });
+    have.add(acc);
+  }
+  render();
+}
+function render() {
+  const lock = state.running ? "disabled" : "";
+  $("rows").innerHTML = state.rows.map((r, i) => `
+    <tr><td>${esc(r.accession)}</td>
+    <td><input class="pos" data-i="${i}" data-k="start" value="${esc(r.start)}" ${lock}></td>
+    <td><input class="pos" data-i="${i}" data-k="end" value="${esc(r.end)}" ${lock}></td>
+    <td><input data-i="${i}" data-k="left" value="${esc(r.left)}" ${lock}></td>
+    <td><input data-i="${i}" data-k="right" value="${esc(r.right)}" ${lock}></td>
+    <td>${esc(r.status)}${r.note ? '<div class="note">' + esc(r.note) + "</div>" : ""}</td>
+    <td><button data-del="${i}" ${lock}>✕</button></td></tr>`).join("");
+  $("rows").querySelectorAll("input").forEach(el => {
+    el.onchange = () => { state.rows[el.dataset.i][el.dataset.k] = el.value.trim(); };
+  });
+  $("rows").querySelectorAll("button[data-del]").forEach(el => {
+    el.onclick = () => { state.rows.splice(Number(el.dataset.del), 1); render(); };
+  });
+  $("row-count").textContent = state.rows.length;
+  $("estimate").textContent = state.rows.length ? "예상 약 " + state.rows.length * 2 + "분 (서열 하나에 약 1~2분)" : "";
+  ["load-folder", "add-acc", "clear-rows", "src-folder", "acc-input", "folder", ...COMMON].forEach(id => { $(id).disabled = state.running; });
+  $("start").disabled = state.running || state.rows.length === 0;
+}
+$("load-folder").onclick = () => api("/api/folder-accessions?" + new URLSearchParams({ folder: $("src-folder").value.trim() }))
+  .then(d => d.accessions.length ? addAccessions(d.accessions) : showError("그 폴더에서 서열 번호를 찾지 못했습니다."))
+  .catch(report);
+$("add-acc").onclick = () => { addAccessions($("acc-input").value.split(/[\s,]+/).filter(Boolean)); $("acc-input").value = ""; };
+$("acc-input").onkeydown = e => { if (e.key === "Enter") $("add-acc").click(); };
+$("clear-rows").onclick = () => { state.rows = []; render(); };
+
+// ---- 설계 시작과 중단
+$("start").onclick = () => {
+  const common = {};
+  COMMON.forEach(k => { common[k] = $(k).value.trim(); });
+  const rows = state.rows.map(r => ({ accession: r.accession, start: r.start, end: r.end, left: r.left, right: r.right }));
+  state.rows.forEach(r => { r.status = "대기"; r.note = ""; });
+  $("result-box").style.display = "none";
+  postJson("/api/design", { rows, common, folder: $("folder").value.trim() })
+    .then(() => { state.running = true; render(); poll(); }).catch(report);
+};
+$("stop").onclick = () => postJson("/api/design/stop", {}).catch(report);
+$("open-folder").onclick = () => postJson("/api/open-folder", { folder: state.folder }).catch(report);
+
+// ---- 진행 상태 (2초마다 조회)
+let pollTimer = null;
+async function poll() {
+  clearTimeout(pollTimer);
+  let s;
+  try { s = await api("/api/design/status"); } catch (e) { report(e); return; }
+  if (s.phase !== "idle" && state.rows.length === 0) {
+    // 화면을 새로 열었는데 작업이 남아 있으면 목록을 되살린다
+    state.rows = s.rows.map(r => ({ accession: r.accession, start: "", end: "", left: "", right: "", status: r.status, note: r.note }));
+  }
+  if (s.rows.length === state.rows.length) {
+    s.rows.forEach((r, i) => { state.rows[i].status = r.status; state.rows[i].note = r.note; });
+  }
+  state.running = s.phase === "running";
+  state.folder = s.file ? s.file.replace(/[\\/][^\\/]*$/, "") : $("folder").value.trim();
+  $("progress-box").style.display = state.running ? "block" : "none";
+  if (state.running) {
+    $("progress").max = Math.max(1, s.total);
+    $("progress").value = s.done;
+    $("progress-label").textContent = "진행 " + s.done + " / " + s.total + (s.current ? " · " + s.current + " 처리 중" : "");
+    pollTimer = setTimeout(poll, 2000);
+  } else if (s.phase !== "idle") {
+    const saved = s.file ? " 결과 파일: " + s.file : " 저장된 결과가 없습니다.";
+    $("result-label").textContent =
+      s.phase === "done" ? "완료." + saved :
+      s.phase === "stopped" ? "중단됨." + saved :
+      "멈춤: " + s.message + saved;
+    $("result-box").style.display = "block";
+  }
+  render();
+}
+
+loadConfig().then(poll).catch(report);
+</script>
+</body>
+</html>

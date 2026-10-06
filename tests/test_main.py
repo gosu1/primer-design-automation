@@ -263,3 +263,9 @@ def test_design_status_and_stop(web):
     assert web.get("/api/design/status").get_json()["phase"] == "idle"
     assert web.post("/api/design/stop").status_code == 200
     assert web.application.designer.stopped is True
+
+
+def test_primer_page_is_served(web):
+    r = web.get("/primer.html")
+    assert r.status_code == 200
+    assert "프라이머 설계".encode() in r.data
