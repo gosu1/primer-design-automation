@@ -32,6 +32,7 @@ SHEET_TITLE_EN = "Results"
 TERMS = ("ko", "en")
 PAIR_COLUMNS = 16   # 후보 순번부터 잘못 붙는 대상(다른 유전자)까지
 FASTA_EXTENSIONS = (".txt", ".fasta", ".fa")
+NOTE_LIMIT = 60   # 화면 상태에 보여 줄 안내문 길이. 전체 문장은 엑셀 메모에 남는다
 
 
 def accessions_in_folder(folder: str) -> List[str]:
@@ -172,6 +173,8 @@ class Designer:
             self._state.update(fields)
 
     def _mark(self, index: int, status: str, note: str = ""):
+        if len(note) > NOTE_LIMIT:
+            note = note[:NOTE_LIMIT - 1] + "…"
         with self._lock:
             rows = [dict(r) for r in self._state["rows"]]
             rows[index].update(status=status, note=note)

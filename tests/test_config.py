@@ -14,6 +14,7 @@ def test_missing_file_gives_defaults(tmp_path):
     assert (loaded["tm_min"], loaded["tm_opt"], loaded["tm_max"]) == (57.0, 60.0, 63.0)
     assert loaded["results_dir"].endswith("primer_results")
     assert loaded["terms"] == "ko"
+    assert loaded["stage2_consent"] is False
 
 
 def test_corrupt_file_gives_defaults(tmp_path):

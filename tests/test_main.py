@@ -1,6 +1,8 @@
+import logging
+
 import pytest
 
-from app import main
+from app import config, main
 from app.main import create_app
 from app.ncbi import NcbiError
 
@@ -57,8 +59,10 @@ class FakeDesigner:
         self.stopped = True
 
 
-def make(tmp_path, monkeypatch, client=None, downloader=None, designer=None):
+def make(tmp_path, monkeypatch, client=None, downloader=None, designer=None, consent=True):
     monkeypatch.setattr("app.config.CONFIG_PATH", str(tmp_path / "config.json"))
+    if consent:
+        config.save({"stage2_consent": True})
     app = create_app(client=client or FakeClient(), downloader=downloader or FakeDownloader(),
                      designer=designer or FakeDesigner())
     app.testing = True
@@ -282,3 +286,28 @@ def test_saving_one_setting_keeps_client_key(web):
 def test_design_passes_terms(web):
     assert web.post("/api/design", json={**DESIGN_BODY, "terms": "en"}).status_code == 200
     assert web.application.designer.started[0].terms == "en"
+
+
+def test_design_requires_stage2_consent(tmp_path, monkeypatch):
+    web = make(tmp_path, monkeypatch, consent=False).test_client()
+    r = web.post("/api/design", json=DESIGN_BODY)
+    assert r.status_code == 403 and "동의" in r.get_json()["error"]
+    assert web.application.designer.started == []
+    web.post("/api/config", json={"stage2_consent": True})
+    assert web.post("/api/design", json=DESIGN_BODY).status_code == 200
+
+
+def test_primer_page_has_consent_box(web):
+    r = web.get("/primer.html")
+    assert b'id="consent"' in r.data and b'id="consent-check"' in r.data
+
+
+def test_serve_hides_dev_server_messages(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "run_simple", lambda *a, **k: calls.append((a, k)))
+    werkzeug_log = logging.getLogger("werkzeug")
+    monkeypatch.setattr(werkzeug_log, "level", werkzeug_log.level)
+    app = object()
+    main.serve(app, 8799)
+    assert calls == [(("127.0.0.1", 8799, app), {"threaded": True})]
+    assert werkzeug_log.level == logging.ERROR

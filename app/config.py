@@ -10,6 +10,7 @@ DEFAULTS = {
     "num_return": 10, "organism": "",
     "results_dir": os.path.join(os.path.expanduser("~"), "Downloads", "primer_results"),
     "terms": "ko",   # 2단계 화면과 엑셀의 전문 용어: ko(한국어) / en(Primer-BLAST 영어)
+    "stage2_consent": False,   # 2단계(Primer-BLAST 자동 제출) 위험 안내에 동의했는지
 }
 
 

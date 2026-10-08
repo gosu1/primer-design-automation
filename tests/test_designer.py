@@ -249,3 +249,11 @@ def test_excel_headers_follow_request_terms(tmp_path):
     book = load_workbook(d.status()["file"])
     assert book.sheetnames == ["Results"]
     assert list(next(book["Results"].values)) == HEADERS_EN
+
+
+def test_long_note_is_shortened_on_screen_but_kept_in_excel(tmp_path):
+    note = "후보 없음: " + "x" * 200
+    s = run(FakeClient([Outcome(note=note)]), tmp_path, 1).status()
+    shown = s["rows"][0]["note"]
+    assert len(shown) <= designer.NOTE_LIMIT and shown.endswith("…")
+    assert sheet_rows(s["file"])[0][-1] == note

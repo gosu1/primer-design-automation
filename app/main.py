@@ -4,6 +4,7 @@
 """
 import dataclasses
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -13,6 +14,7 @@ import urllib.request
 import webbrowser
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.serving import run_simple
 
 from app import config
 from app.designer import Designer, accessions_in_folder, request_from_json
@@ -119,6 +121,8 @@ def create_app(client=None, downloader=None, designer=None):
             job = request_from_json(request.get_json(force=True))
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
+        if not config.load()["stage2_consent"]:
+            return jsonify(error="2단계 안내에 먼저 동의해 주세요"), 403
         if app.designer.is_running():
             return jsonify(error="이미 설계 중입니다"), 409
         config.save({**dataclasses.asdict(job.common), "results_dir": job.folder})
@@ -166,6 +170,12 @@ def choose_port():
         % (PORT, PORT + PORT_TRIES - 1))
 
 
+def serve(app, port: int):
+    """서버를 띄운다. 사용자에게 필요 없는 영어 안내(.env 안내, 개발 서버 경고, 요청 기록)는 보이지 않게 한다."""
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    run_simple(HOST, port, app, threaded=True)
+
+
 def main():
     port, already_running = choose_port()
     url = "http://%s:%d" % (HOST, port)
@@ -177,7 +187,7 @@ def main():
         print("%d번 자리는 다른 프로그램이 쓰고 있어 %d번으로 엽니다." % (PORT, port))
     threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     print("서버를 시작합니다:", url, " (이 창을 닫으면 종료됩니다)")
-    create_app().run(host=HOST, port=port, debug=False)
+    serve(create_app(), port)
 
 
 if __name__ == "__main__":
