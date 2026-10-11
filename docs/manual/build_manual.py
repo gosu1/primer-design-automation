@@ -1,7 +1,7 @@
 """사용설명서 PDF(docs/사용설명서.pdf)와 1쪽 빠른 시작(docs/빠른시작.pdf)을 만든다.
 
 실행: .venv/bin/python docs/manual/build_manual.py   (저장소 루트에서)
-필요: reportlab (requirements-dev.txt), macOS 기본 글꼴 AppleGothic.
+필요: reportlab (requirements-dev.txt), docs/manual/fonts/ 의 Pretendard TTF(저장소에 넣지 않음, 아래 FONTS 참고).
 화면 캡처는 docs/manual/images/ 에 있다. 내용을 고친 뒤 다시 실행하면 PDF와 미리보기가 함께 바뀐다.
 """
 import os
@@ -27,7 +27,14 @@ PREVIEW = os.path.join(ROOT, "docs", "preview")
 TITLE = "NCBI 서열 내려받기 · 프라이머 설계"
 FOOTER = "사용설명서"
 
-pdfmetrics.registerFont(TTFont("Gothic", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"))
+# ReportLab은 OTF를 읽지 못하므로 Pretendard 배포 zip의 public/static/alternative/*.ttf 를 쓴다
+FONTS = os.path.join(HERE, "fonts")
+for name in ("Pretendard-Regular", "Pretendard-SemiBold"):
+    path = os.path.join(FONTS, name + ".ttf")
+    if not os.path.exists(path):
+        raise SystemExit("글꼴이 없습니다: %s\nhttps://github.com/orioncactus/pretendard/releases 의 Pretendard-*.zip 에서 "
+                         "public/static/alternative/%s.ttf 를 꺼내 넣어 주세요." % (path, name))
+    pdfmetrics.registerFont(TTFont(name, path))
 
 NAVY = colors.HexColor("#1f3b5c")
 TEXT = colors.HexColor("#222222")
@@ -43,18 +50,18 @@ MARGIN = 20 * mm
 CONTENT_W = PAGE_W - 2 * MARGIN
 
 S = {
-    "title": ParagraphStyle("title", fontName="Gothic", fontSize=25, leading=32, textColor=NAVY),
-    "subtitle": ParagraphStyle("subtitle", fontName="Gothic", fontSize=12, leading=18, textColor=GRAY, spaceAfter=14),
-    "h1": ParagraphStyle("h1", fontName="Gothic", fontSize=17, leading=24, textColor=NAVY, spaceBefore=14, spaceAfter=8),
-    "h2": ParagraphStyle("h2", fontName="Gothic", fontSize=12.5, leading=18, textColor=NAVY, spaceBefore=6, spaceAfter=4),
-    "body": ParagraphStyle("body", fontName="Gothic", fontSize=9.5, leading=16, textColor=TEXT, spaceAfter=6),
-    "cell": ParagraphStyle("cell", fontName="Gothic", fontSize=9, leading=14, textColor=TEXT),
-    "cellhead": ParagraphStyle("cellhead", fontName="Gothic", fontSize=9, leading=14, textColor=NAVY),
-    "caption": ParagraphStyle("caption", fontName="Gothic", fontSize=8.5, leading=13, textColor=GRAY,
+    "title": ParagraphStyle("title", fontName="Pretendard-SemiBold", fontSize=25, leading=32, textColor=NAVY),
+    "subtitle": ParagraphStyle("subtitle", fontName="Pretendard-Regular", fontSize=12, leading=18, textColor=GRAY, spaceAfter=14),
+    "h1": ParagraphStyle("h1", fontName="Pretendard-SemiBold", fontSize=17, leading=24, textColor=NAVY, spaceBefore=14, spaceAfter=8),
+    "h2": ParagraphStyle("h2", fontName="Pretendard-SemiBold", fontSize=12.5, leading=18, textColor=NAVY, spaceBefore=6, spaceAfter=4),
+    "body": ParagraphStyle("body", fontName="Pretendard-Regular", fontSize=9.5, leading=16, textColor=TEXT, spaceAfter=6),
+    "cell": ParagraphStyle("cell", fontName="Pretendard-Regular", fontSize=9, leading=14, textColor=TEXT),
+    "cellhead": ParagraphStyle("cellhead", fontName="Pretendard-SemiBold", fontSize=9, leading=14, textColor=NAVY),
+    "caption": ParagraphStyle("caption", fontName="Pretendard-Regular", fontSize=8.5, leading=13, textColor=GRAY,
                               alignment=TA_CENTER, spaceBefore=3, spaceAfter=10),
     "code": ParagraphStyle("code", fontName="Courier", fontSize=8.5, leading=13, textColor=colors.HexColor("#3b4a5c")),
-    "quick": ParagraphStyle("quick", fontName="Gothic", fontSize=10, leading=16, textColor=TEXT),
-    "badge": ParagraphStyle("badge", fontName="Gothic", fontSize=11, leading=14, textColor=colors.white,
+    "quick": ParagraphStyle("quick", fontName="Pretendard-Regular", fontSize=10, leading=16, textColor=TEXT),
+    "badge": ParagraphStyle("badge", fontName="Pretendard-SemiBold", fontSize=11, leading=14, textColor=colors.white,
                             alignment=TA_CENTER),
 }
 
@@ -351,7 +358,8 @@ def story(toc_pages):
              ], [0.213, 0.293, 0.252, 0.105, 0.137]),   # 실제 글자 폭으로 정한 너비
              p("두 판본이 같은 프라이머 쌍을 1번 후보로 받았고, 위치만 3자리씩 다릅니다. 두 판본의 앞부분 길이가 조금 "
                "다르기 때문입니다.")))
-    add([CondPageBreak(110 * mm)])
+    # 3장은 첫 캡처가 커서 제목·첫 설명·캡처가 함께 들어갈 자리가 있어야 한다
+    add([CondPageBreak(160 * mm)])
 
     # 3. 1단계 자세히
     add([h1(TOC[2])])
@@ -678,7 +686,7 @@ def footer(canvas, doc):
     canvas.setStrokeColor(LINE)
     canvas.setLineWidth(0.5)
     canvas.line(MARGIN, 14 * mm, PAGE_W - MARGIN, 14 * mm)
-    canvas.setFont("Gothic", 8)
+    canvas.setFont("Pretendard-Regular", 8)
     canvas.setFillColor(GRAY)
     canvas.drawString(MARGIN, 10 * mm, TITLE + " " + FOOTER)
     canvas.drawRightString(PAGE_W - MARGIN, 10 * mm, str(doc.page))
@@ -687,7 +695,7 @@ def footer(canvas, doc):
 
 def quick_footer(canvas, doc):
     canvas.saveState()
-    canvas.setFont("Gothic", 8)
+    canvas.setFont("Pretendard-Regular", 8)
     canvas.setFillColor(GRAY)
     canvas.drawString(MARGIN, 10 * mm, "자세한 내용은 사용설명서.pdf를 보세요.")
     canvas.restoreState()

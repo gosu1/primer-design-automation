@@ -222,5 +222,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q              # NCBI에 접속하지 않는 테스트
 # Primer-BLAST 시험은 tests/fixtures/primerblast/ 의 실제 페이지 원문으로 돈다 (사이트 접속 없음)
 .venv/bin/python docs/manual/build_manual.py   # 사용설명서·빠른 시작 PDF와 미리보기 다시 만들기 (macOS)
+# 설명서 글꼴: Pretendard 배포 zip(github.com/orioncactus/pretendard/releases)의 public/static/alternative/
+#   Pretendard-Regular.ttf, Pretendard-SemiBold.ttf 를 docs/manual/fonts/ 에 넣어 둔다 (저장소에는 넣지 않음)
 NCBI_LIVE=1 .venv/bin/python -m pytest -q -k live   # 실제 접속 확인 (요청 2번)
 ```
