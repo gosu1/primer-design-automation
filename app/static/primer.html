@@ -240,7 +240,14 @@ async function poll() {
   render();
 }
 
-loadConfig().then(poll).catch(report);
+// 1단계의 "이 서열로 프라이머 설계"로 넘어오면, 받은 폴더의 서열을 바로 불러온다
+const handedFolder = new URLSearchParams(location.search).get("folder");
+loadConfig().then(poll).then(() => {
+  if (handedFolder && !state.running) {
+    $("src-folder").value = handedFolder;
+    $("load-folder").click();
+  }
+}).catch(report);
 </script>
 </body>
 </html>

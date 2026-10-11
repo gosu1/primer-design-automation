@@ -313,3 +313,62 @@ def test_serve_hides_dev_server_messages(monkeypatch):
     main.serve(app, 8799)
     assert calls == [(("127.0.0.1", 8799, app), {"threaded": True})]
     assert werkzeug_log.level == logging.ERROR
+
+
+# ---- 1단계에서 받은 뒤 바로 프라이머 설계
+
+def test_start_design_from_uses_last_conditions(tmp_path, monkeypatch):
+    app = make(tmp_path, monkeypatch)
+    config.save({"product_min": 80, "organism": "Mus musculus", "results_dir": str(tmp_path / "r")})
+    app.start_design_from(["NM_1.1", "NM_2.1"])
+    job = app.designer.started[0]
+    assert [r.accession for r in job.rows] == ["NM_1.1", "NM_2.1"]
+    assert job.common.product_min == 80 and job.common.organism == "Mus musculus"
+    assert job.folder == str(tmp_path / "r")
+
+
+def test_start_design_from_refuses_without_consent(tmp_path, monkeypatch):
+    app = make(tmp_path, monkeypatch, consent=False)
+    with pytest.raises(ValueError, match="동의"):
+        app.start_design_from(["NM_1.1"])
+
+
+def test_start_design_from_refuses_too_many(tmp_path, monkeypatch):
+    app = make(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="50"):
+        app.start_design_from(["NM_%d" % i for i in range(51)])
+
+
+def test_start_design_from_refuses_while_running(tmp_path, monkeypatch):
+    app = make(tmp_path, monkeypatch, designer=FakeDesigner(running=True))
+    with pytest.raises(RuntimeError, match="이미 설계 중"):
+        app.start_design_from(["NM_1.1"])
+
+
+def test_real_downloader_hands_over_to_start_design(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.CONFIG_PATH", str(tmp_path / "config.json"))
+    app = create_app(client=FakeClient(), designer=FakeDesigner())
+    assert app.downloader.on_done == app.start_design_from
+
+
+THEN_DESIGN = {"folder": "/x", "per_item": True, "combined": False, "then_design": True}
+
+
+@pytest.mark.parametrize("extra, code, message", [
+    ({"ids": ["1"] * 51}, 400, "50개"),
+    ({"term": "q", "limit": None}, 400, "50개"),
+    ({"term": "q", "limit": 51}, 400, "50개"),
+])
+def test_download_then_design_is_limited(web, extra, code, message):
+    r = web.post("/api/download", json={**THEN_DESIGN, **extra})
+    assert r.status_code == code and message in r.get_json()["error"]
+
+
+def test_download_then_design_needs_consent(tmp_path, monkeypatch):
+    web = make(tmp_path, monkeypatch, consent=False).test_client()
+    assert web.post("/api/download", json={**THEN_DESIGN, "ids": ["1"]}).status_code == 403
+
+
+def test_download_then_design_is_passed_to_job(web):
+    assert web.post("/api/download", json={**THEN_DESIGN, "term": "q", "limit": 2}).status_code == 200
+    assert web.application.downloader.started[0].then_design is True

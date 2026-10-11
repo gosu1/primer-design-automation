@@ -17,10 +17,10 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.serving import run_simple
 
 from app import config
-from app.designer import Designer, accessions_in_folder, request_from_json
+from app.designer import MAX_ROWS, Designer, DesignRequest, accessions_in_folder, request_from_json
 from app.downloader import Downloader, JobRequest
 from app.ncbi import NcbiClient, NcbiError
-from app.primerblast import PrimerBlastClient
+from app.primerblast import Common, PrimerBlastClient, Row
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -31,8 +31,23 @@ def create_app(client=None, downloader=None, designer=None):
     app = Flask(__name__, static_folder="static", static_url_path="")
     settings = config.load()
     app.client = client or NcbiClient(settings["email"], settings["api_key"])
-    app.downloader = downloader or Downloader(app.client)
     app.designer = designer or Designer(PrimerBlastClient())
+
+    def start_design_from(accessions):
+        """1단계에서 받은 서열로 2단계 설계를 바로 시작한다. 조건은 2단계에서 마지막으로 쓴 값이다."""
+        settings = config.load()
+        if not settings["stage2_consent"]:
+            raise ValueError("2단계 안내에 먼저 동의해 주세요")
+        if not accessions or len(accessions) > MAX_ROWS:
+            raise ValueError("받은 뒤 바로 설계는 1~%d개만 할 수 있습니다" % MAX_ROWS)
+        if app.designer.is_running():
+            raise RuntimeError("이미 설계 중입니다")
+        common = Common(**{f.name: settings[f.name] for f in dataclasses.fields(Common)})
+        app.designer.start(DesignRequest(rows=[Row(a) for a in accessions], common=common,
+                                         folder=settings["results_dir"]))
+
+    app.start_design_from = start_design_from
+    app.downloader = downloader or Downloader(app.client, on_done=start_design_from)
 
     @app.errorhandler(NcbiError)
     def ncbi_error(exc):
@@ -61,6 +76,13 @@ def create_app(client=None, downloader=None, designer=None):
             return jsonify(error="저장 폴더를 입력하세요"), 400
         if body.get("ids") is None and not body.get("term"):
             return jsonify(error="받을 항목이 없습니다"), 400
+        then_design = bool(body.get("then_design"))
+        if then_design:
+            if not config.load()["stage2_consent"]:
+                return jsonify(error="2단계 안내에 먼저 동의해 주세요"), 403
+            planned = len(body["ids"]) if body.get("ids") is not None else body.get("limit")
+            if not planned or planned > MAX_ROWS:
+                return jsonify(error="받은 뒤 바로 설계는 한 번에 %d개까지만 할 수 있습니다" % MAX_ROWS), 400
         if app.downloader.is_running():
             return jsonify(error="이미 받는 중입니다. 끝나거나 중단한 뒤 다시 시도하세요."), 409
         app.downloader.start(JobRequest(
@@ -70,6 +92,7 @@ def create_app(client=None, downloader=None, designer=None):
             ids=body.get("ids"),
             term=body.get("term"),
             limit=body.get("limit"),
+            then_design=then_design,
         ))
         return jsonify(ok=True)
 

@@ -37,6 +37,10 @@
   .row { margin-top: 8px; }
   progress { width: 100%; height: 16px; }
   .hint { color: #666; font-size: 12px; }
+  #consent { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .35); align-items: center; justify-content: center; }
+  #consent .dialog { background: #fff; border: 1px solid #999; max-width: 560px; margin: 16px; padding: 16px 20px; line-height: 1.6; }
+  #consent h2 { font-size: 16px; margin: 0 0 8px; }
+  #consent p { margin: 0 0 10px; }
 </style>
 </head>
 <body>
@@ -46,6 +50,18 @@
   <button id="toggle-settings">설정</button>
 </header>
 <div id="error"></div>
+
+<div id="consent">
+  <div class="dialog">
+    <h2>2단계를 쓰기 전에 꼭 읽어 주세요</h2>
+    <p>이 기능은 프로그램이 NCBI Primer-BLAST 웹사이트에 대신 제출합니다. NCBI는 웹페이지에 대한 자동 접근을 허용하지 않으며,
+      그렇게 하면 접근을 제한할 수 있다고 밝히고 있습니다. 제한은 회사 전체의 인터넷 주소 단위로 걸릴 수 있습니다.</p>
+    <p>도구는 한 번에 한 건씩만 제출하고, 15초 간격으로 확인하며, 한 번에 50개까지만 처리합니다.
+      그래도 위험이 없어지지는 않으므로 꼭 필요한 만큼만 사용해 주세요.</p>
+    <p><label><input type="checkbox" id="consent-check"> 위 내용을 읽고 이해했습니다</label></p>
+    <button id="consent-ok" disabled>시작하기</button> <button id="consent-cancel">취소</button>
+  </div>
+</div>
 
 <fieldset id="settings">
   <legend>설정</legend>
@@ -98,12 +114,16 @@
     <label style="margin-left:16px"><input type="checkbox" id="combined"> 합본 파일로 저장</label>
     <span id="save-hint" class="hint" style="margin-left:16px"></span>
   </div>
+  <div class="row"><label><input type="checkbox" id="then-design"> 받은 뒤 바로 프라이머 설계 (Primer-BLAST에 자동 제출, 50개까지)</label></div>
+  <div id="then-design-info" class="hint" style="display:none"></div>
   <div id="progress-box" class="row" style="display:none">
     <progress id="progress" value="0" max="1"></progress>
     <div><span id="progress-label"></span> <button id="stop">중단</button></div>
   </div>
   <div id="result-box" class="row" style="display:none">
     <span id="result-label"></span> <button id="open-folder">폴더 열기</button>
+    <button id="to-primer">이 서열로 프라이머 설계</button>
+    <div id="design-label" style="margin-top: 6px"></div>
   </div>
 </fieldset>
 
@@ -127,6 +147,29 @@ function hideError() { $("error").style.display = "none"; }
 const report = e => showError(e.message);
 
 // ---- 설정
+// ---- 받은 뒤 바로 프라이머 설계: 조건은 2단계에서 마지막으로 쓴 값, 처음이면 2단계와 같은 동의를 받는다
+const MAX_DESIGN = 50;
+function designSummary(c) {
+  return "적용할 조건: PCR product size " + c.product_min + "–" + c.product_max + " · Tm " + c.tm_min + "/" + c.tm_opt + "/" + c.tm_max
+    + " · # of primers to return " + c.num_return + " · Organism " + (c.organism || "Homo sapiens")
+    + " · 저장: " + c.results_dir + " (조건은 2단계 화면에서 바꿉니다)";
+}
+$("then-design").onchange = () => {
+  const on = $("then-design").checked;
+  $("then-design-info").textContent = designSummary(state.config);
+  $("then-design-info").style.display = on ? "block" : "none";
+  if (on && !state.config.stage2_consent) $("consent").style.display = "flex";
+};
+$("consent-check").onchange = () => { $("consent-ok").disabled = !$("consent-check").checked; };
+$("consent-ok").onclick = () => postJson("/api/config", { stage2_consent: true })
+  .then(() => { state.config.stage2_consent = true; $("consent").style.display = "none"; }).catch(report);
+$("consent-cancel").onclick = () => {
+  $("consent").style.display = "none";
+  $("then-design").checked = false;
+  $("then-design").onchange();
+};
+$("to-primer").onclick = () => { location.href = "primer.html?folder=" + encodeURIComponent(state.folder); };
+
 async function loadConfig() {
   state.config = await api("/api/config");
   $("email").value = state.config.email;
@@ -204,6 +247,15 @@ function updateButtons() {
 }
 function startDownload(extra) {
   const body = { folder: $("folder").value.trim(), per_item: $("per_item").checked, combined: $("combined").checked, ...extra };
+  if ($("then-design").checked) {
+    if (body.term && body.limit === null) body.limit = state.count;   // 전체 받기도 개수를 정해 보낸다
+    const planned = body.ids ? body.ids.length : body.limit;
+    if (!planned || planned > MAX_DESIGN) {
+      showError("받은 뒤 바로 설계는 한 번에 " + MAX_DESIGN + "개까지만 할 수 있습니다. 받을 개수를 줄이거나 체크를 꺼 주세요.");
+      return;
+    }
+    body.then_design = true;
+  }
   $("result-box").style.display = "none";
   postJson("/api/download", body).then(() => { state.running = true; updateButtons(); poll(); }).catch(report);
 }
@@ -239,6 +291,10 @@ async function poll() {
       s.phase === "done" ? "완료: " + saved + missing :
       s.phase === "stopped" ? "중단됨: " + saved :
       s.done.toLocaleString() + "건까지 저장됨. 이후 실패: " + s.message;
+    $("to-primer").style.display = s.done > 0 ? "inline-block" : "none";
+    $("design-label").innerHTML = s.design === "started"
+      ? '프라이머 설계를 시작했습니다. <a href="primer.html">2단계 화면에서 진행 상황 보기</a>'
+      : esc(s.design);
     $("result-box").style.display = "block";
   }
   updateButtons();

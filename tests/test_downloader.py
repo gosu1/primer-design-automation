@@ -55,7 +55,7 @@ def run_job(client, tmp_path, per_item=True, combined=False, **kwargs):
 
 def test_initial_status_is_idle(tmp_path):
     assert Downloader(FakeClient()).status() == {
-        "phase": "idle", "total": 0, "done": 0, "missing": 0, "folder": "", "message": "",
+        "phase": "idle", "total": 0, "done": 0, "missing": 0, "folder": "", "message": "", "design": "",
     }
 
 
@@ -154,3 +154,48 @@ def test_start_while_running_raises(tmp_path):
         d.start(req)
     release.set()
     d.wait()
+
+
+# ---- 받은 뒤 바로 프라이머 설계
+
+def test_then_design_hands_downloaded_accessions_over(tmp_path):
+    got = []
+    d = Downloader(FakeClient({"1": TWO}), on_done=got.append)
+    d.start(JobRequest(folder=str(tmp_path / "out"), per_item=True, combined=False, ids=["1", "2"], then_design=True))
+    d.wait()
+    assert got == [["LR881868.1", "MW1.1"]]
+    assert d.status()["phase"] == "done" and d.status()["design"] == "started"
+
+
+def test_without_then_design_nothing_is_handed_over(tmp_path):
+    got = []
+    d = Downloader(FakeClient({"1": TWO}), on_done=got.append)
+    d.start(JobRequest(folder=str(tmp_path / "out"), per_item=True, combined=False, ids=["1", "2"]))
+    d.wait()
+    assert got == [] and d.status()["design"] == ""
+
+
+def test_stopped_download_does_not_start_design(tmp_path):
+    got = []
+
+    class StoppingClient(FakeClient):
+        def fetch_fasta(self, ids):
+            d.stop()
+            return super().fetch_fasta(ids)
+
+    d = Downloader(StoppingClient({"1": TWO}), on_done=got.append)
+    d.start(JobRequest(folder=str(tmp_path / "out"), per_item=True, combined=False, ids=["1", "2"], then_design=True))
+    d.wait()
+    assert d.status()["phase"] == "stopped" and got == []
+
+
+def test_design_refusal_is_reported(tmp_path):
+    def refuse(accessions):
+        raise RuntimeError("이미 설계 중입니다")
+
+    d = Downloader(FakeClient({"1": TWO}), on_done=refuse)
+    d.start(JobRequest(folder=str(tmp_path / "out"), per_item=True, combined=False, ids=["1", "2"], then_design=True))
+    d.wait()
+    s = d.status()
+    assert s["phase"] == "done"
+    assert s["design"] == "자동 설계를 시작하지 못했습니다: 이미 설계 중입니다"

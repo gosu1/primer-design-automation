@@ -43,17 +43,20 @@ class JobRequest:
     ids: Optional[List[str]] = None   # 체크한 항목 모드
     term: Optional[str] = None        # 상위 N건 / 전체 모드
     limit: Optional[int] = None       # None이면 전체
+    then_design: bool = False         # 받은 뒤 바로 프라이머 설계
 
 
 class Downloader:
     """한 번에 작업 하나만 돌린다. 상태는 status()로 읽는다."""
 
-    def __init__(self, client):
+    def __init__(self, client, on_done=None):
         self.client = client
+        self.on_done = on_done   # then_design일 때 받은 서열 번호 목록을 넘겨 설계를 시작한다
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
-        self._state = {"phase": "idle", "total": 0, "done": 0, "missing": 0, "folder": "", "message": ""}
+        self._state = {"phase": "idle", "total": 0, "done": 0, "missing": 0, "folder": "", "message": "",
+                       "design": ""}
 
     def status(self) -> dict:
         with self._lock:
@@ -67,7 +70,7 @@ class Downloader:
             raise RuntimeError("이미 받는 중입니다")
         self._stop.clear()
         self._set(phase="collecting" if request.ids is None else "downloading",
-                  total=0, done=0, missing=0, folder=request.folder, message="")
+                  total=0, done=0, missing=0, folder=request.folder, message="", design="")
         self._thread = threading.Thread(target=self._run, args=(request,), daemon=True)
         self._thread.start()
 
@@ -86,8 +89,19 @@ class Downloader:
         try:
             ids = request.ids if request.ids is not None else self._collect_ids(request.term, request.limit)
             self._set(phase="downloading", total=len(ids), done=0)
-            self._download(ids, request)
-            self._set(phase="stopped" if self._stop.is_set() else "done")
+            accessions = self._download(ids, request)
+            if self._stop.is_set():
+                self._set(phase="stopped")
+                return
+            design = ""
+            if request.then_design and self.on_done:
+                try:
+                    self.on_done(accessions)
+                    design = "started"
+                except (ValueError, RuntimeError) as exc:
+                    design = "자동 설계를 시작하지 못했습니다: %s" % exc
+            # 화면이 완료를 보는 순간 설계 결과도 함께 보이도록 한 번에 바꾼다
+            self._set(phase="done", design=design)
         except Exception as exc:  # NcbiError, OSError 등: 이유를 화면에 보여 준다
             self._set(phase="error", message=str(exc))
 
@@ -104,15 +118,17 @@ class Downloader:
             if not page or len(ids) >= target or self._stop.is_set():
                 return ids
 
-    def _download(self, ids: List[str], request: JobRequest):
+    def _download(self, ids: List[str], request: JobRequest) -> List[str]:
+        """받아서 저장한 서열 번호 목록을 돌려준다."""
         os.makedirs(request.folder, exist_ok=True)
+        saved = []
         combined = None
         if request.combined:
             combined = open(os.path.join(request.folder, COMBINED_NAME), "w", encoding="utf-8", newline="\n")
         try:
             for i in range(0, len(ids), FETCH_BATCH):
                 if self._stop.is_set():
-                    return
+                    return saved
                 batch = ids[i:i + FETCH_BATCH]
                 records = split_fasta(self.client.fetch_fasta(batch))
                 for accession, text in records:
@@ -122,9 +138,11 @@ class Downloader:
                             f.write(text)
                     if combined is not None:
                         combined.write(text)
+                    saved.append(accession)
                 state = self.status()
                 self._set(done=state["done"] + len(records),
                           missing=state["missing"] + len(batch) - len(records))
         finally:
             if combined is not None:
                 combined.close()
+        return saved
